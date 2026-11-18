@@ -1,0 +1,31 @@
+# One DataRova run. Started by datarova.timer.
+[Unit]
+Description=DataRova - project/ASIN snapshot into MySQL
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=datarova
+Group=datarova
+WorkingDirectory=/opt/datarova
+ExecStart=/usr/local/bin/uv run --no-sync python run.py --quiet
+# ~5 minutes normally; leave room for retries and a lock wait.
+TimeoutStartSec=3600
+Nice=10
+
+# Hardening: DataRova only writes inside its own directory.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/opt/datarova/data /opt/datarova/logs
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=datarova

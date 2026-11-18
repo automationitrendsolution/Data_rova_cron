@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[codz]
+.venv/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Secrets and credentials -- never commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Authenticated browser session (Cognito tokens in the Chromium profile)
+data/session/
+
+# Runtime artefacts
+data/raw/*
+data/screenshots/*
+!data/**/.gitkeep
+data/*.lock
+logs/*
+!logs/.gitkeep
+
+# Exports (business data)
+*.xlsx

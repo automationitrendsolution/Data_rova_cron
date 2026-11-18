@@ -1,0 +1,18 @@
+# DataRova schedule for cron -- an alternative to the systemd timer in
+# deploy/systemd/. Use one or the other, never both.
+#
+# Install:  sudo cp deploy/datarova.cron /etc/cron.d/datarova
+#           sudo chmod 644 /etc/cron.d/datarova
+#
+# cron reads these times in the SERVER'S timezone. Check it with `timedatectl`
+# and keep exactly ONE of the two lines below uncommented.
+
+SHELL=/bin/bash
+PATH=/usr/local/bin:/usr/bin:/bin
+HOME=/home/datarova
+
+# --- Server timezone is UTC: 10:00 IST == 04:30 UTC ---------------------------
+30 4 * * * datarova cd /opt/datarova && /usr/local/bin/uv run --no-sync python run.py --quiet >> logs/cron.log 2>&1
+
+# --- Server timezone is Asia/Kolkata -------------------------------------------
+# 0 10 * * * datarova cd /opt/datarova && /usr/local/bin/uv run --no-sync python run.py --quiet >> logs/cron.log 2>&1

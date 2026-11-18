@@ -1,0 +1,51 @@
+{
+  "_comment": "Candidate locators for the DataRova web app, tried in order until one becomes visible. Verified against the live pages on 2026-11-18. When a run fails naming a key, add the new selector at the TOP of that list rather than editing the code. Any Playwright selector engine works: css, xpath=, text=, role=. {value} is filled in by the code.",
+
+  "sign_in_email_input": [
+    "input[name='email']",
+    "input[type='email']",
+    "input[placeholder*='email' i]"
+  ],
+  "sign_in_password_input": [
+    "input[name='password']",
+    "input[type='password']"
+  ],
+  "sign_in_submit": [
+    "[data-test-id='login-submit']",
+    "#login_signin_submit",
+    "button[type='submit']:has-text('Sign in')"
+  ],
+  "sign_in_error": [
+    ".MuiAlert-message",
+    "[role='alert']",
+    "text=/incorrect (username|email) or password/i",
+    "text=/user does not exist/i"
+  ],
+
+  "projects_rows_per_page": [
+    "select[aria-label='Rows per page']",
+    ".MuiTablePagination-select"
+  ],
+  "projects_page_caption": [
+    "p.MuiTablePagination-caption:has-text(' of ')",
+    "text=/^\\d+-\\d+ of \\d+$/"
+  ],
+
+  "asins_table_header": [
+    "table th:has-text('Product')"
+  ],
+  "asins_empty_state": [
+    "text=/Here you can follow up on the performance of ASINs/i"
+  ],
+  "asins_rows_per_page_button": [
+    "#rows-per-page-button",
+    "button:near(:text('Rows per page'))"
+  ],
+  "asins_rows_per_page_option": [
+    "role=menuitem[name='{value}']",
+    "[role='menuitem']:has(span:text-is('{value}'))",
+    "[role='menu'] li:text-is('{value}')",
+    ".MuiMenu-list li:text-is('{value}')",
+    "li:text-is('{value}')"
+  ]
+}
