@@ -162,6 +162,11 @@ class MarketplaceTable:
     asin_count: int | None
     keywords_count: int | None
     rows: list[AsinRow] = field(default_factory=list)
+    #: Address of the ASINs page this table was read from (its Keywords tab
+    #: is the same address with /keywords/ instead of /asins/).
+    page_url: str | None = None
+    #: Filled in afterwards from the Keywords tab (see keywords_page).
+    keywords: list = field(default_factory=list)
 
 
 def _norm(header: str) -> str:
@@ -249,7 +254,8 @@ class AsinsPage:
         if not marketplaces:
             # No switcher: a single-marketplace project.
             rows = self._read_rows(card.project_id, total)
-            return [MarketplaceTable(current_id, None, None, total, card.keywords_count, rows)]
+            return [MarketplaceTable(current_id, None, None, total, card.keywords_count, rows,
+                                     page_url=self.page.url)]
 
         current = next((m for m in marketplaces if m.flag and m.flag == current_flag), None)
         if current is None and len(marketplaces) == 1:
@@ -260,7 +266,8 @@ class AsinsPage:
                 transient=True,
             )
 
-        tables = [self._table(current_id, current, self._read_rows(current_id, total))]
+        rows = self._read_rows(current_id, total)
+        tables = [self._table(current_id, current, rows, self.page.url)]
         read_ids = {current_id}
         for other in marketplaces:
             if other is current:
@@ -271,12 +278,15 @@ class AsinsPage:
             other_id = self._switch_to(other, read_ids, card.project_id)
             read_ids.add(other_id)
             other_total = self._wait_for_total(other_id)
-            tables.append(self._table(other_id, other, self._read_rows(other_id, other_total)))
+            other_rows = self._read_rows(other_id, other_total)
+            tables.append(self._table(other_id, other, other_rows, self.page.url))
         return tables
 
     # -- marketplaces ----------------------------------------------------------------
 
-    def _table(self, project_id: int | None, m: Marketplace, rows: list[AsinRow]) -> MarketplaceTable:
+    def _table(
+        self, project_id: int | None, m: Marketplace, rows: list[AsinRow], page_url: str | None = None
+    ) -> MarketplaceTable:
         if m.asin_count is not None and m.asin_count != len(rows):
             logger.warning(
                 "Project %s %s: the switcher says %d ASINs but the table shows %d",
@@ -289,6 +299,7 @@ class AsinsPage:
             asin_count=m.asin_count,
             keywords_count=m.keywords_count,
             rows=rows,
+            page_url=page_url,
         )
 
     def _open_switcher(self) -> bool:

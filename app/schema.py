@@ -99,10 +99,83 @@ OUTPUT_COLUMNS: tuple[str, ...] = tuple(
 )
 
 
-def create_table_sql(name: str) -> str:
-    """The MySQL ``CREATE TABLE`` statement, for review before it is run."""
-    _metadata, table = build_table(name)
+#: VARCHAR lengths of the keywords table.
+KEYWORD_STRING_LENGTHS: dict[str, int] = {
+    "project_name": 255,
+    "project_marketplace": 8,
+    "project_domain": 32,
+    "keyword": 255,
+    "top_asin": 20,
+}
+
+
+def build_keywords_table(name: str) -> tuple[MetaData, Table]:
+    """``datarova_keywords``: one row per day x project marketplace x keyword,
+    from each project's Keywords tab."""
+    metadata = MetaData()
+    table = Table(
+        name,
+        metadata,
+        Column(
+            "id",
+            BigInteger().with_variant(Integer, "sqlite"),
+            primary_key=True,
+            autoincrement=True,
+        ),
+        Column("scrape_date", Date, nullable=False, comment="Snapshot day (IST)"),
+        Column("scraped_at", DateTime, nullable=False, comment="Run time (IST)"),
+        Column("project_id", BigInteger, nullable=False, comment="Id in the project's link"),
+        Column("project_group_id", BigInteger, comment="Id of the project card"),
+        Column("project_name", String(KEYWORD_STRING_LENGTHS["project_name"])),
+        Column("project_marketplace", String(KEYWORD_STRING_LENGTHS["project_marketplace"])),
+        Column("project_domain", String(KEYWORD_STRING_LENGTHS["project_domain"])),
+        # Exact comparison: "luces navideñas" and "luces navidenas" are two
+        # different keywords, which the table's default collation would merge.
+        Column(
+            "keyword",
+            String(KEYWORD_STRING_LENGTHS["keyword"]).with_variant(
+                mysql.VARCHAR(KEYWORD_STRING_LENGTHS["keyword"], charset="utf8mb4", collation="utf8mb4_bin"),
+                "mysql",
+            ),
+            nullable=False,
+        ),
+        Column("clicks_l4w", Integer, comment="Keyword Clicks, last 4 weeks"),
+        Column("sales_l4w", Integer, comment="Keyword Sales, last 4 weeks"),
+        Column("conversion_l4w", Float, comment="Keyword Conversion percent, last 4 weeks"),
+        Column("sales_distribution_l4w", Float, comment="Sales Distribution percent, last 4 weeks"),
+        Column("trend_l4w", Float, comment="Trend percent, last 4 weeks"),
+        Column("organic_rank", Integer),
+        Column("sponsored_rank", Integer),
+        Column("asins_ranked_top10", Integer, comment="ASINs Ranked in Top 10"),
+        Column("dstr", Integer, comment="DSTR"),
+        Column("top_asin", String(KEYWORD_STRING_LENGTHS["top_asin"]), comment="Only when shown in Edit Columns"),
+        Column("top_asin_clicks", Integer),
+        Column("top_asin_sales", Integer),
+        Column("top_asin_conversion", Float),
+        UniqueConstraint("scrape_date", "project_id", "keyword", name="uq_datarova_keyword_snapshot"),
+        Index("ix_datarova_keyword", "keyword"),
+        mysql_engine="InnoDB",
+        mysql_charset="utf8mb4",
+        mysql_collate="utf8mb4_unicode_ci",
+    )
+    return metadata, table
+
+
+KEYWORD_COLUMNS: tuple[str, ...] = tuple(
+    column.name for column in build_keywords_table("_")[1].columns if column.name != "id"
+)
+
+
+def _ddl(table: Table) -> list[str]:
     statements = [str(CreateTable(table).compile(dialect=mysql.dialect())).strip() + ";"]
     for index in table.indexes:
         statements.append(str(CreateIndex(index).compile(dialect=mysql.dialect())).strip() + ";")
+    return statements
+
+
+def create_table_sql(name: str, keywords_name: str | None = None) -> str:
+    """The MySQL ``CREATE TABLE`` statements, for review before they are run."""
+    statements = _ddl(build_table(name)[1])
+    if keywords_name:
+        statements += _ddl(build_keywords_table(keywords_name)[1])
     return "\n\n".join(statements)

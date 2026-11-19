@@ -222,6 +222,9 @@ class TestShippedCatalogue:
         "marketplace_item",
         "asins_rows_per_page_button",
         "asins_rows_per_page_option",
+        "keywords_table_header",
+        "keywords_empty_state",
+        "keywords_next_page",
     )
 
     def test_every_used_key_is_configured(self) -> None:

@@ -7,9 +7,9 @@ from sqlalchemy import create_engine, inspect
 from sqlalchemy.pool import StaticPool
 
 from app.database import DataRovaRepository
-from app.processor import build_rows
+from app.processor import build_keyword_rows, build_rows
 from app.schema import create_table_sql
-from tests.conftest import TABLE, asin, project, table
+from tests.conftest import TABLE, asin, keyword, project, table
 
 DAY1 = date(2026, 11, 17)
 DAY2 = date(2026, 11, 18)
@@ -90,3 +90,39 @@ class TestCreateTable:
         assert "AUTO_INCREMENT" in sql
         assert "UNIQUE (scrape_date, project_id, asin)" in sql
         assert "utf8mb4" in sql
+
+
+
+def keyword_rows(day: date, n: int = 3):
+    return build_keyword_rows(
+        project(),
+        table([], keywords=[keyword(f"kw {i}") for i in range(n)]),
+        scrape_date=day,
+        scraped_at=datetime.combine(day, datetime.min.time()),
+    )
+
+
+class TestKeywords:
+    def test_asins_and_keywords_replace_the_day_together(self, repository: DataRovaRepository) -> None:
+        repository.replace_snapshot(rows(DAY1), keyword_rows(DAY1, 5))
+        result = repository.replace_snapshot(rows(DAY1), keyword_rows(DAY1, 2))
+
+        assert result.keywords_deleted == 5
+        assert result.keywords_inserted == 2
+        assert repository.count_for_date(DAY1, keywords=True) == 2
+
+    def test_failed_keyword_insert_rolls_back_the_asins_too(self, repository: DataRovaRepository) -> None:
+        repository.replace_snapshot(rows(DAY1), keyword_rows(DAY1))
+        bad = keyword_rows(DAY1)
+        bad[1]["keyword"] = None
+
+        with pytest.raises(Exception):
+            repository.replace_snapshot(rows(DAY1, ("B000000009",)), bad)
+
+        assert repository.count_for_date(DAY1) == 2
+        assert repository.count_for_date(DAY1, keywords=True) == 3
+
+    def test_show_sql_includes_the_keywords_table(self) -> None:
+        sql = create_table_sql(TABLE, "datarova_keywords")
+        assert "CREATE TABLE datarova_keywords (" in sql
+        assert "UNIQUE (scrape_date, project_id, keyword)" in sql

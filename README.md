@@ -96,6 +96,33 @@ See the exact table definition with:
 uv run python run.py --show-sql
 ```
 
+### Keywords: `datarova_keywords`
+
+Every project marketplace's **Keywords tab** is read too (all pages, 250 per
+page) into a second table, one row per **day × project × keyword**. It is
+saved in the same transaction as the ASINs: both tables change together or
+not at all.
+
+| Column | Example | Where on the website |
+|---|---|---|
+| `scrape_date`, `scraped_at` | 2026-11-19 | the run (India time) |
+| `project_id`, `project_group_id` | 37440, 74293 | as in `datarova_all_data` |
+| `project_name`, `project_marketplace`, `project_domain` | MOSS POLE CANADA, CA, amazon.ca | as in `datarova_all_data` |
+| `keyword` | windshield cover for ice and snow | Keyword |
+| `clicks_l4w` | 8458 | Keyword Clicks L4W |
+| `sales_l4w` | 1524 | Keyword Sales L4W |
+| `conversion_l4w` | 18.0 | Keyword Conversion L4W (%) |
+| `sales_distribution_l4w` | 32.3 | Sales Distribution L4W (%) |
+| `trend_l4w` | -34.3 | Trend L4W (%) |
+| `organic_rank` | 3 | Organic Rank |
+| `sponsored_rank` | 1 | Sponsored Rank (0 = not ranked) |
+| `asins_ranked_top10` | 6 | ASINs Ranked in Top 10 |
+| `dstr` | 14 | DSTR |
+| `top_asin`, `top_asin_clicks`, `top_asin_sales`, `top_asin_conversion` | | only filled when these columns are switched on in DataRova's "Edit Columns" |
+
+About 23,000 keywords a day, so this table grows by ~23,000 rows per day.
+Set `SCRAPE_KEYWORDS=false` in `.env` to skip keywords (ASINs only, faster).
+
 ---
 
 ## Setup

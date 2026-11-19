@@ -16,12 +16,14 @@ from sqlalchemy import create_engine
 from sqlalchemy.pool import StaticPool
 
 from app.asins_page import AsinRow, MarketplaceTable
+from app.keywords_page import KeywordRow
 from app.config import Settings, load_settings
 from app.database import DataRovaRepository
 from app.projects_page import ProjectCard
-from app.schema import build_table
+from app.schema import build_keywords_table, build_table
 
 TABLE = "datarova_all_data"
+KEYWORDS_TABLE = "datarova_keywords"
 
 #: Minimum environment a valid Settings needs.
 BASE_ENV = {
@@ -85,7 +87,9 @@ def repository() -> Iterator[DataRovaRepository]:
     )
     metadata, _table = build_table(TABLE)
     metadata.create_all(engine)
-    repo = DataRovaRepository(engine, table=TABLE)
+    kw_metadata, _kw = build_keywords_table(KEYWORDS_TABLE)
+    kw_metadata.create_all(engine)
+    repo = DataRovaRepository(engine, table=TABLE, keywords_table=KEYWORDS_TABLE)
     repo.reflect()
     yield repo
     repo.dispose()
@@ -131,7 +135,7 @@ def asin(code: str = "B0HN1SX55L", *, primary: bool = False, **values: str) -> A
 
 
 def table(rows: list[AsinRow], *, project_id: int = 74199, marketplace: str = "US",
-          domain: str = "amazon.com") -> MarketplaceTable:
+          domain: str = "amazon.com", keywords: list[KeywordRow] | None = None) -> MarketplaceTable:
     """One marketplace's ASIN table."""
     return MarketplaceTable(
         project_id=project_id,
@@ -140,4 +144,23 @@ def table(rows: list[AsinRow], *, project_id: int = 74199, marketplace: str = "U
         asin_count=len(rows),
         keywords_count=39,
         rows=rows,
+        page_url=f"https://app.datarova.com/projects/{project_id}/asins/B07K6YKZBK",
+        keywords=list(keywords or []),
     )
+
+
+def keyword(text: str = "windshield cover for ice and snow", **values: str) -> KeywordRow:
+    """One row of a Keywords tab, values as displayed."""
+    shown = {
+        "clicks_l4w": "8,458",
+        "sales_l4w": "1,524",
+        "conversion_l4w": "18.0%",
+        "sales_distribution_l4w": "32.3%",
+        "trend_l4w": "-34.3%",
+        "organic_rank": "3",
+        "sponsored_rank": "1",
+        "asins_ranked_top10": "6",
+        "dstr": "14",
+    }
+    shown.update(values)
+    return KeywordRow(text, shown)

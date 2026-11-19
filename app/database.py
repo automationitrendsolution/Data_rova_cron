@@ -34,7 +34,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from .config import DatabaseConfig, Settings
 from .exceptions import ConfigurationError, DatabaseError
 from .logging_config import get_logger
-from .schema import build_table
+from .schema import build_keywords_table, build_table
 
 logger = get_logger("database")
 
@@ -56,6 +56,14 @@ TRANSIENT_MYSQL_ERRNOS = frozenset(
 )
 
 
+def _short(exc: BaseException) -> str:
+    """The driver's own message only -- not SQLAlchemy's echo of the whole
+    statement and its parameters, which can run to hundreds of rows."""
+    orig = getattr(exc, "orig", None)
+    text = str(orig) if orig is not None else str(exc)
+    return text.split("\n[SQL:", 1)[0].strip()
+
+
 def _database_error(message: str, exc: SQLAlchemyError) -> DatabaseError:
     """Wrap a driver failure, marking it transient when a retry could succeed."""
     error = DatabaseError(message)
@@ -74,6 +82,9 @@ class WriteResult:
     dates: tuple[str, ...]
     deleted: int
     inserted: int
+    keywords_table: str | None = None
+    keywords_deleted: int = 0
+    keywords_inserted: int = 0
 
 
 def create_db_engine(config: DatabaseConfig, *, echo: bool = False) -> Engine:
@@ -88,20 +99,22 @@ def create_db_engine(config: DatabaseConfig, *, echo: bool = False) -> Engine:
         )
     except SQLAlchemyError as exc:
         raise DatabaseError(
-            f"Could not create database engine for {config.safe_url}: {exc}"
+            f"Could not create database engine for {config.safe_url}: {_short(exc)}"
         ) from exc
     logger.debug("Engine created for %s", config.safe_url)
     return engine
 
 
 class DataRovaRepository:
-    """All database access for the DataRova table."""
+    """All database access for the DataRova tables (ASINs and keywords)."""
 
-    def __init__(self, engine: Engine, *, table: str) -> None:
+    def __init__(self, engine: Engine, *, table: str, keywords_table: str | None = None) -> None:
         self.engine = engine
         self.table_name = table
+        self.keywords_table_name = keywords_table
         self._metadata = MetaData()
         self._table: Table | None = None
+        self._keywords_table: Table | None = None
 
     # -- connectivity and schema --------------------------------------------
 
@@ -111,26 +124,32 @@ class DataRovaRepository:
             with self.engine.connect() as connection:
                 connection.execute(text("SELECT 1"))
         except SQLAlchemyError as exc:
-            raise _database_error(f"Database connection failed: {exc}", exc) from exc
+            raise _database_error(f"Database connection failed: {_short(exc)}", exc) from exc
         logger.info("Connected to the database")
 
-    def table_exists(self) -> bool:
+    def table_exists(self, name: str | None = None) -> bool:
         try:
-            return self.table_name in inspect(self.engine).get_table_names()
+            return (name or self.table_name) in inspect(self.engine).get_table_names()
         except SQLAlchemyError as exc:
-            raise _database_error(f"Could not list tables: {exc}", exc) from exc
+            raise _database_error(f"Could not list tables: {_short(exc)}", exc) from exc
 
     def create_table_if_missing(self) -> bool:
-        """Create the table when it does not exist.  Never alters an existing one."""
-        if self.table_exists():
-            return False
-        try:
-            metadata, table = build_table(self.table_name)
-            metadata.create_all(self.engine, tables=[table])
-        except SQLAlchemyError as exc:
-            raise DatabaseError(f"Could not create table {self.table_name!r}: {exc}") from exc
-        logger.info("Created table %s", self.table_name)
-        return True
+        """Create each table that does not exist.  Never alters an existing one."""
+        created = False
+        wanted = [(self.table_name, build_table)]
+        if self.keywords_table_name:
+            wanted.append((self.keywords_table_name, build_keywords_table))
+        for name, builder in wanted:
+            if self.table_exists(name):
+                continue
+            try:
+                metadata, table = builder(name)
+                metadata.create_all(self.engine, tables=[table])
+            except SQLAlchemyError as exc:
+                raise DatabaseError(f"Could not create table {name!r}: {_short(exc)}") from exc
+            logger.info("Created table %s", name)
+            created = True
+        return created
 
     def reflect(self) -> None:
         """Load the live table definition.
@@ -142,13 +161,20 @@ class DataRovaRepository:
             self._table = Table(self.table_name, self._metadata, autoload_with=self.engine)
         except SQLAlchemyError as exc:
             raise _database_error(
-                f"Could not read table {self.table_name!r}: {exc}. Create it first: set "
+                f"Could not read table {self.table_name!r}: {_short(exc)}. Create it first: set "
                 "CREATE_TABLE=true in .env (review it with: python run.py --show-sql).",
                 exc,
             ) from exc
         if DATE_COLUMN not in self._table.columns:
             raise DatabaseError(f"Table {self.table_name!r} has no column {DATE_COLUMN!r}.")
         logger.debug("Reflected %s with %d column(s)", self.table_name, len(self._table.columns))
+        if self.keywords_table_name and self.table_exists(self.keywords_table_name):
+            try:
+                self._keywords_table = Table(
+                    self.keywords_table_name, self._metadata, autoload_with=self.engine
+                )
+            except SQLAlchemyError as exc:
+                raise _database_error(f"Could not read table {self.keywords_table_name!r}: {_short(exc)}", exc) from exc
 
     @property
     def table(self) -> Table:
@@ -157,11 +183,11 @@ class DataRovaRepository:
         assert self._table is not None
         return self._table
 
-    def writable_columns(self) -> tuple[str, ...]:
+    def writable_columns(self, table: Table | None = None) -> tuple[str, ...]:
         """Live columns minus auto-generated keys, in table order."""
         return tuple(
             column.name
-            for column in self.table.columns
+            for column in (table if table is not None else self.table).columns
             if not (
                 column.primary_key
                 and column.autoincrement in (True, "auto")
@@ -169,16 +195,19 @@ class DataRovaRepository:
             )
         )
 
-    def align(self, records: Sequence[dict[str, object]]) -> list[dict[str, object]]:
+    def align(
+        self, records: Sequence[dict[str, object]], table: Table | None = None
+    ) -> list[dict[str, object]]:
         """Shape rows to the live table: drop unknown keys, NULL absent columns."""
-        writable = self.writable_columns()
+        table = table if table is not None else self.table
+        writable = self.writable_columns(table)
         if records:
             supplied = set(records[0])
             extra = sorted(supplied - set(writable))
             absent = sorted(set(writable) - supplied)
             if extra:
                 logger.warning(
-                    "Column(s) not in %s, not written: %s", self.table_name, ", ".join(extra)
+                    "Column(s) not in %s, not written: %s", table.name, ", ".join(extra)
                 )
             if absent:
                 logger.warning(
@@ -204,7 +233,7 @@ class DataRovaRepository:
                 logger.warning(
                     "Database change undone (nothing saved) because of: %s: %s",
                     type(exc).__name__,
-                    exc,
+                    _short(exc),
                 )
                 raise
             transaction.commit()
@@ -213,8 +242,14 @@ class DataRovaRepository:
 
     # -- writes --------------------------------------------------------------
 
-    def replace_snapshot(self, records: Sequence[dict[str, object]]) -> WriteResult:
-        """Replace every snapshot day present in ``records`` with ``records``, atomically.
+    def replace_snapshot(
+        self,
+        records: Sequence[dict[str, object]],
+        keyword_records: Sequence[dict[str, object]] | None = None,
+    ) -> WriteResult:
+        """Replace every snapshot day present in ``records`` with ``records`` --
+        and, when given, the same days of the keywords table with
+        ``keyword_records`` -- all in one transaction.
 
         Raises:
             ValueError: If ``records`` is empty -- a delete with nothing to
@@ -224,31 +259,60 @@ class DataRovaRepository:
         """
         if not records:
             raise ValueError("replace_snapshot called with zero records; refusing to delete data")
+        if keyword_records and self._keywords_table is None:
+            raise DatabaseError(
+                f"Table {self.keywords_table_name!r} does not exist. Create it first: set "
+                "CREATE_TABLE=true in .env (review it with: python run.py --show-sql)."
+            )
 
         rows = self.align(records)
         days = sorted({row[DATE_COLUMN] for row in rows})
         labels = tuple(str(day) for day in days)
         table = self.table
+        kw_table = self._keywords_table
+        kw_rows = self.align(keyword_records, kw_table) if keyword_records and kw_table is not None else []
+        kw_deleted = kw_inserted = 0
         try:
             with self.transaction() as connection:
                 deleted = connection.execute(
                     delete(table).where(table.c[DATE_COLUMN].in_(days))
                 ).rowcount
                 logger.info(
-                    "Replacing %s old rows for %s", f"{max(deleted or 0, 0):,}", ", ".join(labels)
+                    "Replacing %s old ASIN rows for %s", f"{max(deleted or 0, 0):,}", ", ".join(labels)
                 )
                 inserted = _chunked_insert(connection, table, rows)
+                if kw_rows and kw_table is not None:
+                    kw_deleted = connection.execute(
+                        delete(kw_table).where(kw_table.c[DATE_COLUMN].in_(days))
+                    ).rowcount
+                    logger.info(
+                        "Replacing %s old keyword rows for %s",
+                        f"{max(kw_deleted or 0, 0):,}",
+                        ", ".join(labels),
+                    )
+                    kw_inserted = _chunked_insert(connection, kw_table, kw_rows)
         except SQLAlchemyError as exc:
             raise _database_error(
-                f"Load for {', '.join(labels)} failed and was rolled back: {exc}", exc
+                f"Load for {', '.join(labels)} failed and was rolled back: {_short(exc)}", exc
             ) from exc
 
         logger.info("Saved %s new rows to %s", f"{inserted:,}", self.table_name)
-        return WriteResult(self.table_name, labels, max(deleted or 0, 0), inserted)
+        if kw_inserted:
+            logger.info("Saved %s new rows to %s", f"{kw_inserted:,}", self.keywords_table_name)
+        return WriteResult(
+            self.table_name,
+            labels,
+            max(deleted or 0, 0),
+            inserted,
+            self.keywords_table_name if kw_rows else None,
+            max(kw_deleted or 0, 0),
+            kw_inserted,
+        )
 
-    def count_for_date(self, day: object) -> int:
+    def count_for_date(self, day: object, *, keywords: bool = False) -> int:
         """Row count for one snapshot day -- used by verification and tests."""
-        table = self.table
+        table = self._keywords_table if keywords else self.table
+        assert table is not None
         try:
             with self.engine.connect() as connection:
                 return int(
@@ -257,7 +321,7 @@ class DataRovaRepository:
                     ).scalar_one()
                 )
         except SQLAlchemyError as exc:
-            raise DatabaseError(f"Could not count rows in {self.table_name}: {exc}") from exc
+            raise DatabaseError(f"Could not count rows in {self.table_name}: {_short(exc)}") from exc
 
     def dispose(self) -> None:
         """Release pooled connections."""
@@ -283,7 +347,9 @@ def build_repository(settings: Settings, *, echo: bool = False) -> DataRovaRepos
             "No database configured: set DB_HOST, DB_NAME, DB_USER and DB_PASSWORD in .env"
         )
     repository = DataRovaRepository(
-        create_db_engine(settings.database, echo=echo), table=settings.table
+        create_db_engine(settings.database, echo=echo),
+        table=settings.table,
+        keywords_table=settings.keywords_table,
     )
     try:
         repository.check_connection()

@@ -26,6 +26,7 @@ INDIA_TZ = ZoneInfo("Asia/Kolkata")
 
 DEFAULT_APP_URL = "https://app.datarova.com"
 DEFAULT_TABLE = "datarova_all_data"
+DEFAULT_KEYWORDS_TABLE = "datarova_keywords"
 
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 _FALSE_VALUES = {"0", "false", "no", "off"}
@@ -198,6 +199,9 @@ class Settings:
     data_timezone: ZoneInfo = INDIA_TZ
 
     table: str = DEFAULT_TABLE
+    keywords_table: str = DEFAULT_KEYWORDS_TABLE
+    #: Also read every project's Keywords tab (slower: ~1 more page per marketplace).
+    scrape_keywords: bool = True
     create_table: bool = False
 
     max_retries: int = 3
@@ -236,6 +240,7 @@ class Settings:
             "app_url": self.app_url,
             "database": self.database.safe_url if self.database else "not configured",
             "table": self.table,
+            "keywords_table": self.keywords_table if self.scrape_keywords else "(off)",
             "create_table": self.create_table,
             "session_dir": str(self.session_dir),
             "headless": self.headless,
@@ -303,8 +308,10 @@ def load_settings(env_file: Path | str | None = None, *, override: bool = False)
         raise ConfigurationError(f"LOG_LEVEL must be a standard level, got {log_level!r}")
 
     table = _get("DB_TABLE", DEFAULT_TABLE) or DEFAULT_TABLE
-    if not table.replace("_", "").isalnum():
-        raise ConfigurationError(f"DB_TABLE must be letters, digits and _ only, got {table!r}")
+    keywords_table = _get("DB_KEYWORDS_TABLE", DEFAULT_KEYWORDS_TABLE) or DEFAULT_KEYWORDS_TABLE
+    for key, name in (("DB_TABLE", table), ("DB_KEYWORDS_TABLE", keywords_table)):
+        if not name.replace("_", "").isalnum():
+            raise ConfigurationError(f"{key} must be letters, digits and _ only, got {name!r}")
 
     return Settings(
         app_url=_get_https("DATAROVA_APP_URL", DEFAULT_APP_URL),
@@ -326,6 +333,8 @@ def load_settings(env_file: Path | str | None = None, *, override: bool = False)
         page_delay_seconds=_get_float("PAGE_DELAY_SECONDS", 1.0, minimum=0.0),
         data_timezone=_get_zone("DATA_TIMEZONE", "Asia/Kolkata"),
         table=table,
+        keywords_table=keywords_table,
+        scrape_keywords=_get_bool("SCRAPE_KEYWORDS", True),
         create_table=_get_bool("CREATE_TABLE", False),
         max_retries=_get_int("MAX_RETRIES", 3, minimum=1),
         retry_backoff_seconds=_get_float("RETRY_BACKOFF_SECONDS", 10.0, minimum=0.0),

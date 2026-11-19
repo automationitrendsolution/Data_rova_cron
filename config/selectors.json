@@ -37,6 +37,16 @@
   "asins_empty_state": [
     "text=/Here you can follow up on the performance of ASINs/i"
   ],
+  "keywords_table_header": [
+    "table th:has-text('Keyword (')"
+  ],
+  "keywords_empty_state": [
+    "text=/Here you can follow up on the performance of keywords/i"
+  ],
+  "keywords_next_page": [
+    "nav#pagination button[aria-label='Go to next page']",
+    "button[aria-label='Go to next page']"
+  ],
   "marketplace_button": [
     "#marketplace-button"
   ],

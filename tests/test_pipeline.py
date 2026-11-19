@@ -13,7 +13,7 @@ from app.database import DataRovaRepository
 from app.exceptions import EmptyDataError, ScrapeError
 from app.main import DataRovaPipeline, RunMode, RunOptions
 from app.projects_page import ProjectCard
-from tests.conftest import asin, project, table
+from tests.conftest import asin, keyword, project, table
 
 
 class FakeSession:
@@ -46,7 +46,7 @@ class FakeSite:
     def read_projects(self) -> list[ProjectCard]:
         return self.projects
 
-    def read_asins(self, card: ProjectCard) -> list[MarketplaceTable]:
+    def read_project(self, card: ProjectCard) -> list[MarketplaceTable]:
         self.pages_read.append(card.project_id)
         if card.project_id == self.broken:
             raise ScrapeError("No 'Product' column", transient=False)
@@ -59,7 +59,8 @@ class FakeSite:
             return [table([], project_id=card.project_id),
                     table(rows, project_id=card.project_id + 1000, marketplace="UK",
                           domain="amazon.co.uk")]
-        return [table(rows, project_id=card.project_id)]
+        return [table(rows, project_id=card.project_id,
+                      keywords=[keyword(f"kw {card.project_id} {i}") for i in range(3)])]
 
 
 def make_pipeline(settings: Settings, repository: DataRovaRepository, site: FakeSite,
@@ -95,6 +96,10 @@ def test_full_run_saves_every_project_and_asin(
     assert summary.write_result is not None
     assert summary.write_result.inserted == 3
     assert repository.count_for_date(summary.snapshot_date) == 3
+    # Project 1 (US) has 3 keywords; project 2's UK marketplace has none.
+    assert summary.keyword_rows == 3
+    assert summary.write_result.keywords_inserted == 3
+    assert repository.count_for_date(summary.snapshot_date, keywords=True) == 3
 
 
 def test_dry_run_saves_nothing(settings: Settings, repository: DataRovaRepository) -> None:

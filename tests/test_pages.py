@@ -116,3 +116,38 @@ class TestMarketplaceSwitcher:
     def test_project_id_of_url(self) -> None:
         assert project_id_of("https://app.datarova.com/projects/37440/asins/B0C36YRQWN") == 37440
         assert project_id_of("https://app.datarova.com/keyword-spy") is None
+
+
+
+class TestKeywordTable:
+    HEADERS = [
+        "Keyword (39)", "Keyword\nClicks\nL4W", "Keyword\nSales\nL4W", "Keyword\nConversion\nL4W",
+        "Sales\nDistribution\nL4W", "Trend\nL4W", "Organic\nRank", "Sponsored\nRank",
+        "ASINs Ranked\nin Top 10", "DSTR", "", "",
+    ]
+
+    def test_maps_columns_by_header(self) -> None:
+        from app.keywords_page import missing_columns as kw_missing, parse_keyword_table
+
+        [row] = parse_keyword_table(
+            self.HEADERS,
+            [["windshield cover for ice and snow", "8,458", "1,524", "18.0%", "32.3%", "199.4%",
+              "3", "1", "6", "14"]],
+        )
+        assert row.keyword == "windshield cover for ice and snow"
+        assert row.values == {
+            "clicks_l4w": "8,458", "sales_l4w": "1,524", "conversion_l4w": "18.0%",
+            "sales_distribution_l4w": "32.3%", "trend_l4w": "199.4%", "organic_rank": "3",
+            "sponsored_rank": "1", "asins_ranked_top10": "6", "dstr": "14",
+        }
+        assert kw_missing(self.HEADERS) == []
+
+    def test_keywords_url(self) -> None:
+        from app.keywords_page import keywords_url
+
+        assert keywords_url("https://app.datarova.com/projects/37440/asins/B0C36YRQWN") == (
+            "https://app.datarova.com/projects/37440/keywords/B0C36YRQWN"
+        )
+        assert keywords_url("https://app.datarova.com/projects/70942/asins") == (
+            "https://app.datarova.com/projects/70942/keywords"
+        )

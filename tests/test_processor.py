@@ -7,9 +7,9 @@ from decimal import Decimal
 import pytest
 
 from app.exceptions import EmptyDataError
-from app.processor import build_rows, check_card_total, check_not_empty, currency_of, to_float, to_int, to_money
+from app.processor import build_keyword_rows, build_rows, check_card_total, check_not_empty, currency_of, to_float, to_int, to_money
 from app.schema import OUTPUT_COLUMNS, STRING_LENGTHS
-from tests.conftest import asin, project, table
+from tests.conftest import asin, keyword, project, table
 
 DAY = date(2026, 11, 18)
 AT = datetime(2026, 11, 18, 10, 0, 0)
@@ -131,3 +131,30 @@ class TestCheckNotEmpty:
 
     def test_ok(self) -> None:
         check_not_empty([project()], [{"asin": "B0HN1SX55L"}])
+
+
+class TestKeywordRows:
+    def test_maps_every_field(self) -> None:
+        card = project(74293, asins=("B0C36YRQWN",))
+        ca = table([], project_id=37440, marketplace="CA", domain="amazon.ca", keywords=[keyword()])
+
+        [row] = build_keyword_rows(card, ca, scrape_date=DAY, scraped_at=AT)
+
+        assert row["project_id"] == 37440
+        assert row["project_group_id"] == 74293
+        assert row["project_marketplace"] == "CA"
+        assert row["keyword"] == "windshield cover for ice and snow"
+        assert row["clicks_l4w"] == 8458
+        assert row["sales_l4w"] == 1524
+        assert row["conversion_l4w"] == 18.0
+        assert row["sales_distribution_l4w"] == 32.3
+        assert row["trend_l4w"] == -34.3
+        assert row["organic_rank"] == 3
+        assert row["sponsored_rank"] == 1
+        assert row["asins_ranked_top10"] == 6
+        assert row["dstr"] == 14
+        assert row["top_asin"] is None
+
+    def test_case_duplicates_are_skipped(self) -> None:
+        t = table([], keywords=[keyword("Snow Cover"), keyword("snow cover")])
+        assert len(build_keyword_rows(project(), t, scrape_date=DAY, scraped_at=AT)) == 1

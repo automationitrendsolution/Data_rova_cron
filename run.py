@@ -32,7 +32,7 @@ import sys
 from pathlib import Path
 
 from app import __version__
-from app.config import DEFAULT_TABLE, load_settings
+from app.config import DEFAULT_KEYWORDS_TABLE, DEFAULT_TABLE, load_settings
 from app.exceptions import ConfigurationError, DataRovaError
 from app.logging_config import configure_logging, get_logger
 from app.main import DataRovaPipeline, RunMode, RunOptions
@@ -123,7 +123,12 @@ def main(argv: list[str] | None = None) -> int:
         from app.schema import create_table_sql
 
         load_dotenv(args.env_file or PROJECT_ROOT / ".env")
-        print(create_table_sql(os.environ.get("DB_TABLE") or DEFAULT_TABLE))
+        print(
+            create_table_sql(
+                os.environ.get("DB_TABLE") or DEFAULT_TABLE,
+                os.environ.get("DB_KEYWORDS_TABLE") or DEFAULT_KEYWORDS_TABLE,
+            )
+        )
         return 0
 
     try:

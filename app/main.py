@@ -40,7 +40,8 @@ from .exceptions import (
 )
 from .logging_config import get_logger
 from .maintenance import cleanup_old_files
-from .processor import build_rows, check_card_total, check_not_empty
+from .keywords_page import KeywordsPage
+from .processor import build_keyword_rows, build_rows, check_card_total, check_not_empty
 from .projects_page import ProjectCard, ProjectsPage
 from .retry import retry_call
 from .runlock import run_lock
@@ -50,12 +51,13 @@ logger = get_logger("pipeline")
 
 
 class DataRovaSite:
-    """The two DataRova pages a run reads, in one signed-in browser."""
+    """The DataRova pages a run reads, in one signed-in browser."""
 
-    def __init__(self, session: BrowserSession) -> None:
+    def __init__(self, session: BrowserSession, *, keywords: bool = True) -> None:
         self.session = session
         self._projects = ProjectsPage(session)
         self._asins = AsinsPage(session)
+        self._keywords = KeywordsPage(session) if keywords else None
 
     def sign_in(self) -> None:
         ensure_signed_in(self.session)
@@ -63,10 +65,13 @@ class DataRovaSite:
     def read_projects(self) -> list[ProjectCard]:
         return self._projects.read_all()
 
-    def read_asins(self, project: ProjectCard) -> list[MarketplaceTable]:
-        """Every marketplace table of ``project``, re-read once when they do not
-        add up to the card's "N ASINs" (usually a marketplace missed while the
-        switcher was still rendering)."""
+    def read_project(self, project: ProjectCard) -> list[MarketplaceTable]:
+        """Every marketplace of ``project``: its ASIN table and, unless turned
+        off, its Keywords tab.
+
+        The ASINs are re-read once when they do not add up to the card's
+        "N ASINs" (usually a marketplace missed while the switcher was still
+        rendering)."""
         tables = self._asins.read(project)
         if project.asin_count is not None and _total(tables) != project.asin_count:
             logger.info(
@@ -76,11 +81,29 @@ class DataRovaSite:
             again = self._asins.read(project)
             if _total(again) >= _total(tables):
                 tables = again
+        if self._keywords is not None:
+            for table in tables:
+                if table.keywords_count == 0:
+                    continue
+                if not table.page_url:
+                    logger.warning(
+                        "Project %s %s: %s keyword(s) but no ASIN page to start from; skipped",
+                        project.project_id, table.domain, table.keywords_count,
+                    )
+                    continue
+                table.keywords = self._keywords.read(table)
+                if table.keywords_count is not None and len(table.keywords) != table.keywords_count:
+                    logger.warning(
+                        "Project %s %s: the switcher says %d keywords but the tab shows %d",
+                        table.project_id, table.domain, table.keywords_count, len(table.keywords),
+                    )
         return tables
 
     def use_slow_mode(self) -> None:
         """Wait longer for each page (end-of-run second pass)."""
         self._asins.table_timeout_ms = SLOW_TABLE_TIMEOUT_MS
+        if self._keywords is not None:
+            self._keywords.table_timeout_ms = SLOW_TABLE_TIMEOUT_MS
 
 
 def _total(tables: list[MarketplaceTable]) -> int:
@@ -124,7 +147,7 @@ class RunOptions:
     def description(self) -> str:
         if self.mode is RunMode.LOGIN:
             return "Sign in to DataRova and check the session"
-        text = "Get every DataRova project and ASIN and save them to the database"
+        text = "Get every DataRova project, ASIN and keyword and save them to the database"
         if self.project_ids:
             text += f" -- ONLY projects {sorted(self.project_ids)}, nothing is saved"
         elif self.dry_run:
@@ -144,6 +167,7 @@ class RunSummary:
     projects: int = 0
     rows: int = 0
     rows_by_marketplace: dict[str, int] = field(default_factory=dict)
+    keyword_rows: int = 0
     write_result: WriteResult | None = None
     error: str | None = None
     advice: str | None = None
@@ -161,11 +185,15 @@ class RunSummary:
             return "FAILED"
         if self.write_result:
             return (
-                f"SUCCESS - {self.write_result.inserted:,} rows saved for "
+                f"SUCCESS - {self.write_result.inserted:,} ASIN rows and "
+                f"{self.write_result.keywords_inserted:,} keyword rows saved for "
                 f"{', '.join(self.write_result.dates)}"
             )
         if self.rows:
-            return f"SUCCESS (not saved) - {self.rows:,} rows ready from {self.projects} projects"
+            return (
+                f"SUCCESS (not saved) - {self.rows:,} ASIN rows and {self.keyword_rows:,} "
+                f"keyword rows ready from {self.projects} projects"
+            )
         return "SUCCESS"
 
     def log(self) -> None:
@@ -191,12 +219,20 @@ class RunSummary:
             ]
             lines.append(f"{'Total':<{width}}  {self.rows:>7,}")
             write("ASIN rows", *lines)
+        if self.keyword_rows:
+            write("Keywords", f"{self.keyword_rows:,}")
         if self.write_result:
-            write(
-                "Database",
+            lines = [
                 f"{self.write_result.table}: removed {self.write_result.deleted:,} old rows, "
-                f"saved {self.write_result.inserted:,} new rows",
-            )
+                f"saved {self.write_result.inserted:,} new rows"
+            ]
+            if self.write_result.keywords_table:
+                lines.append(
+                    f"{self.write_result.keywords_table}: removed "
+                    f"{self.write_result.keywords_deleted:,} old rows, saved "
+                    f"{self.write_result.keywords_inserted:,} new rows"
+                )
+            write("Database", *lines)
         elif failed:
             write("Database", "not changed (existing data is untouched)")
         elif self.rows:
@@ -246,6 +282,11 @@ def advice_for(error: BaseException) -> str:
     if isinstance(error, ConfigurationError):
         return "Check the settings in the .env file."
     if isinstance(error, DatabaseError):
+        if "rolled back" in str(error):
+            return (
+                "MySQL refused some of the data (see the problem above). Nothing was "
+                "half-saved: the database changes all at once or not at all."
+            )
         return (
             "Check that MySQL is reachable and the DB_* values in .env are right. "
             "Nothing was half-saved: the database changes all at once or not at all."
@@ -288,7 +329,9 @@ class DataRovaPipeline:
         self._session_factory = session_factory or (
             lambda: BrowserSession(settings, headless=self._headless())
         )
-        self._site_factory = site_factory or DataRovaSite
+        self._site_factory = site_factory or (
+            lambda session: DataRovaSite(session, keywords=settings.scrape_keywords)
+        )
 
     # -- entry point -------------------------------------------------------
 
@@ -381,13 +424,17 @@ class DataRovaPipeline:
                     sum(p.asin_count or 0 for p in projects),
                 )
 
-                self._step(4, total, f"Read the ASIN table of {len(projects)} project(s)")
-                rows, raw = self._fetch_all_asins(site, projects, scrape_date, scraped_at)
+                what = "ASINs and keywords" if self.settings.scrape_keywords else "ASINs"
+                self._step(4, total, f"Read the {what} of {len(projects)} project(s)")
+                rows, keyword_rows, raw = self._fetch_all_asins(
+                    site, projects, scrape_date, scraped_at
+                )
 
             self._save_raw(projects, raw)
             check_not_empty(projects, rows)
             self.summary.projects = len(projects)
             self.summary.rows = len(rows)
+            self.summary.keyword_rows = len(keyword_rows)
             self.summary.rows_by_marketplace = dict(
                 Counter(row["project_marketplace"] or "?" for row in rows)
             )
@@ -397,7 +444,10 @@ class DataRovaPipeline:
                 return
             self._step(5, total, "Save to the database")
             self.summary.write_result = self._retry(
-                "Database load", lambda: repository.replace_snapshot(rows)
+                "Database load",
+                lambda: repository.replace_snapshot(
+                    rows, keyword_rows if self.settings.scrape_keywords else None
+                ),
             )
         finally:
             # Housekeeping also has to run when a run fails, but must never
@@ -417,8 +467,8 @@ class DataRovaPipeline:
         projects: list[ProjectCard],
         scrape_date: date,
         scraped_at: Any,
-    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        """Every project's ASIN rows.
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+        """Every project's ASIN rows and keyword rows.
 
         Projects whose page will not load are put aside and tried again at the
         end of the run, waiting longer for each page -- DataRova's slow pages
@@ -427,6 +477,7 @@ class DataRovaPipeline:
         replaces the whole day and a missing project would silently disappear.
         """
         rows: list[dict[str, Any]] = []
+        keyword_rows: list[dict[str, Any]] = []
         raw: dict[str, Any] = {}
         results: dict[int, list[MarketplaceTable]] = {}
         deferred: list[ProjectCard] = []
@@ -436,8 +487,8 @@ class DataRovaPipeline:
                 time.sleep(self.settings.page_delay_seconds)
             try:
                 results[project.project_id] = self._retry(
-                    f"ASINs of project {project.project_id}",
-                    lambda project=project: site.read_asins(project),
+                    f"Project {project.project_id}",
+                    lambda project=project: site.read_project(project),
                 )
             except (NavigationError, ScrapeError) as exc:
                 if not exc.transient:
@@ -458,8 +509,8 @@ class DataRovaPipeline:
             site.use_slow_mode()
             for index, project in enumerate(deferred, start=1):
                 results[project.project_id] = self._retry(
-                    f"ASINs of project {project.project_id} (second pass)",
-                    lambda project=project: site.read_asins(project),
+                    f"Project {project.project_id} (second pass)",
+                    lambda project=project: site.read_project(project),
                 )
                 self._log_project(index, len(deferred), project, results[project.project_id], "retry ")
 
@@ -472,14 +523,19 @@ class DataRovaPipeline:
                 rows.extend(
                     build_rows(project, table, scrape_date=scrape_date, scraped_at=scraped_at)
                 )
-        return rows, raw
+                keyword_rows.extend(
+                    build_keyword_rows(project, table, scrape_date=scrape_date, scraped_at=scraped_at)
+                )
+        return rows, keyword_rows, raw
 
     @staticmethod
     def _log_project(
         index: int, total: int, project: ProjectCard, tables: list[MarketplaceTable], prefix: str = ""
     ) -> None:
-        parts = ", ".join(f"{t.marketplace or '?'} {len(t.rows)}" for t in tables)
-        logger.info("[%s%d/%d] %s (%s): %s ASIN(s)", prefix, index, total, project.name, project.project_id, parts)
+        parts = ", ".join(
+            f"{t.marketplace or '?'} {len(t.rows)} ASINs / {len(t.keywords)} keywords" for t in tables
+        )
+        logger.info("[%s%d/%d] %s (%s): %s", prefix, index, total, project.name, project.project_id, parts)
 
     def _save_raw(self, projects: list[ProjectCard], raw: dict[str, Any]) -> None:
         """With KEEP_RAW_JSON, keep the scraped page values for later checking."""

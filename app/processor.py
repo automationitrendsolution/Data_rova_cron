@@ -16,7 +16,8 @@ from .asins_page import MarketplaceTable
 from .exceptions import EmptyDataError
 from .logging_config import get_logger
 from .projects_page import ProjectCard
-from .schema import OUTPUT_COLUMNS, STRING_LENGTHS
+from .keywords_page import KeywordRow
+from .schema import KEYWORD_COLUMNS, KEYWORD_STRING_LENGTHS, OUTPUT_COLUMNS, STRING_LENGTHS
 
 logger = get_logger("processor")
 
@@ -82,9 +83,9 @@ def currency_of(value: str | None) -> str | None:
     return match.group(1) if match else None
 
 
-def _fit(row: dict[str, Any]) -> dict[str, Any]:
+def _fit(row: dict[str, Any], lengths: dict[str, int] = STRING_LENGTHS) -> dict[str, Any]:
     """Trim strings to their column's length so MySQL never rejects a row."""
-    for column, length in STRING_LENGTHS.items():
+    for column, length in lengths.items():
         value = row.get(column)
         if isinstance(value, str) and len(value) > length:
             row[column] = value[:length]
@@ -161,3 +162,48 @@ def check_not_empty(projects: list[ProjectCard], rows: list[dict[str, Any]]) -> 
         raise EmptyDataError("DataRova showed no projects; nothing was deleted or inserted")
     if not rows:
         raise EmptyDataError("DataRova showed no ASINs at all; nothing was deleted or inserted")
+
+
+def build_keyword_rows(
+    project: ProjectCard,
+    table: MarketplaceTable,
+    *,
+    scrape_date: date,
+    scraped_at: datetime,
+) -> list[dict[str, Any]]:
+    """Keyword rows for one marketplace of one project card."""
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    item: KeywordRow
+    for item in table.keywords:
+        key = item.keyword.lower()[: KEYWORD_STRING_LENGTHS["keyword"]]
+        if key in seen:
+            continue
+        seen.add(key)
+        v = item.values
+        top_asin = (v.get("top_asin") or "").strip().upper() or None
+        row = {
+            "scrape_date": scrape_date,
+            "scraped_at": scraped_at,
+            "project_id": table.project_id,
+            "project_group_id": project.project_id,
+            "project_name": project.name or None,
+            "project_marketplace": table.marketplace,
+            "project_domain": table.domain,
+            "keyword": item.keyword,
+            "clicks_l4w": to_int(v.get("clicks_l4w")),
+            "sales_l4w": to_int(v.get("sales_l4w")),
+            "conversion_l4w": to_float(v.get("conversion_l4w")),
+            "sales_distribution_l4w": to_float(v.get("sales_distribution_l4w")),
+            "trend_l4w": to_float(v.get("trend_l4w")),
+            "organic_rank": to_int(v.get("organic_rank")),
+            "sponsored_rank": to_int(v.get("sponsored_rank")),
+            "asins_ranked_top10": to_int(v.get("asins_ranked_top10")),
+            "dstr": to_int(v.get("dstr")),
+            "top_asin": top_asin if top_asin and top_asin.lower() not in _EMPTY else None,
+            "top_asin_clicks": to_int(v.get("top_asin_clicks")),
+            "top_asin_sales": to_int(v.get("top_asin_sales")),
+            "top_asin_conversion": to_float(v.get("top_asin_conversion")),
+        }
+        rows.append(_fit({c: row.get(c) for c in KEYWORD_COLUMNS}, KEYWORD_STRING_LENGTHS))
+    return rows
