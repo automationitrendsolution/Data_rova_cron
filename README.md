@@ -38,9 +38,11 @@ the browser -- the app opens a real (hidden) Chrome window and reads:
 | Page | What is read |
 |---|---|
 | **Projects** (`/projects`) | every project card: name, marketplace flag(s), primary ASIN, "N ASINs", "N Keywords". The page size is switched to 250 so all cards are on one page. |
-| **Project → ASINs tab** (`/projects/{id}/asins/{primary ASIN}`) | the ASIN table: Product (ASIN, title, "Primary ASIN" badge), Price, Reviews, Rating, Visibility, Keywords in Top 10, Choice Badges, Latest BSR, Top Level Category. Page size is raised to 250 when a project has more than 25 ASINs. |
+| **Project → marketplace switcher** (the flag next to the project name) | every marketplace of the project (amazon.com, amazon.ca, …) with its ASIN and keyword counts. Each marketplace is its own DataRova project with its own id, so one card can give several. |
+| **Project → ASINs tab** (`/projects/{id}/asins/{primary ASIN}`), once per marketplace | the ASIN table: Product (ASIN, title, "Primary ASIN" badge), Price, Reviews, Rating, Visibility, Keywords in Top 10, Choice Badges, Latest BSR, Top Level Category. Page size is raised to 250 when a project has more than 25 ASINs. |
 
-One page per project, about **6–10 minutes** a run. Columns are matched by
+One page per project marketplace, about **10 minutes** a run (longer when
+DataRova is slow: a page stuck loading for 30 s is reloaded, up to 3 times). Columns are matched by
 their header name, so if someone hides or moves a column with DataRova's
 "Edit Columns", only that column comes out empty (with a warning in the log).
 
@@ -58,12 +60,14 @@ Table **`datarova_all_data`** -- one row per **day × project × ASIN**.
 |---|---|---|
 | `scrape_date` | 2026-11-18 | the day of the run (India time) |
 | `scraped_at` | 2026-11-18 10:00:12 | when the run started (India time) |
-| `project_id` | 74199 | the number in the project's link |
+| `project_id` | 74199 | the number in the project's link, for this marketplace |
+| `project_group_id` | 74199 | the project card's id -- the same for all marketplaces of one card (e.g. MOSS POLE CANADA: US = 74293, CA = 37440, both group 74293) |
 | `project_name` | Snow cover HSV | project card |
-| `project_marketplace` | US (or US,CA) | flag(s) on the project card |
+| `project_marketplace` | US / CA / UK / DE | marketplace switcher |
+| `project_domain` | amazon.com | marketplace switcher |
 | `project_primary_asin` | B07K6YKZBK | project card |
-| `project_asin_count` | 11 | "11 ASINs" on the card |
-| `project_keywords_count` | 39 | "39 Keywords" on the card |
+| `project_asin_count` | 11 | "11 ASINs" for this marketplace in the switcher |
+| `project_keywords_count` | 39 | "39 Keywords" for this marketplace in the switcher |
 | `asin` | B0HN1SX55L | ASIN table, Product column |
 | `is_primary_asin` | 0 / 1 | "Primary ASIN" badge |
 | `title` | Windshield Cover for Ice and Snow… | Product column |
@@ -217,5 +221,6 @@ config/selectors.json   page locators (edit here if DataRova changes a page)
 deploy/                 Windows Task Scheduler, systemd, cron
 tests/                  uv run pytest  (no DataRova or MySQL needed)
 ```
-#   D a t a _ r o v a _ c r o n  
+#   D a t a _ r o v a _ c r o n 
+ 
  

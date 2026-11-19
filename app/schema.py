@@ -32,7 +32,8 @@ from sqlalchemy.schema import CreateIndex, CreateTable
 #: Column -> max length, for every VARCHAR (values are trimmed to fit).
 STRING_LENGTHS: dict[str, int] = {
     "project_name": 255,
-    "project_marketplace": 32,
+    "project_marketplace": 8,
+    "project_domain": 32,
     "project_primary_asin": 20,
     "asin": 20,
     "currency": 8,
@@ -56,17 +57,19 @@ def build_table(name: str) -> tuple[MetaData, Table]:
         ),
         Column("scrape_date", Date, nullable=False, comment="Snapshot day (IST)"),
         Column("scraped_at", DateTime, nullable=False, comment="Run time (IST)"),
-        # -- project card (projects page) -------------------------------------
-        Column("project_id", BigInteger, nullable=False),
-        Column("project_name", String(STRING_LENGTHS["project_name"])),
+        # -- project (one marketplace of a project card) -----------------------
+        Column("project_id", BigInteger, nullable=False, comment="Id in the project's link"),
         Column(
-            "project_marketplace",
-            String(STRING_LENGTHS["project_marketplace"]),
-            comment="Marketplace flag(s) on the card, e.g. US or US,CA",
+            "project_group_id",
+            BigInteger,
+            comment="Id of the project card; the same for every marketplace of one card",
         ),
+        Column("project_name", String(STRING_LENGTHS["project_name"])),
+        Column("project_marketplace", String(STRING_LENGTHS["project_marketplace"]), comment="US, CA, UK, DE, ..."),
+        Column("project_domain", String(STRING_LENGTHS["project_domain"]), comment="amazon.com, amazon.ca, ..."),
         Column("project_primary_asin", String(STRING_LENGTHS["project_primary_asin"])),
-        Column("project_asin_count", Integer, comment="'N ASINs' on the card"),
-        Column("project_keywords_count", Integer, comment="'N Keywords' on the card"),
+        Column("project_asin_count", Integer, comment="'N ASINs' in the marketplace switcher"),
+        Column("project_keywords_count", Integer, comment="'N Keywords' in the marketplace switcher"),
         # -- ASIN table (project page) ----------------------------------------
         Column("asin", String(STRING_LENGTHS["asin"]), nullable=False),
         Column("is_primary_asin", Boolean),

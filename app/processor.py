@@ -8,12 +8,11 @@ NULL rather than failing the whole run.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from .asins_page import AsinRow
+from .asins_page import MarketplaceTable
 from .exceptions import EmptyDataError
 from .logging_config import get_logger
 from .projects_page import ProjectCard
@@ -94,27 +93,29 @@ def _fit(row: dict[str, Any]) -> dict[str, Any]:
 
 def build_rows(
     project: ProjectCard,
-    asins: Iterable[AsinRow],
+    table: MarketplaceTable,
     *,
     scrape_date: date,
     scraped_at: datetime,
 ) -> list[dict[str, Any]]:
-    """Rows for one project.  Duplicate ASINs are skipped."""
+    """Rows for one marketplace of one project card.  Duplicate ASINs are skipped."""
     base = {
         "scrape_date": scrape_date,
         "scraped_at": scraped_at,
-        "project_id": project.project_id,
+        "project_id": table.project_id,
+        "project_group_id": project.project_id,
         "project_name": project.name or None,
-        "project_marketplace": project.marketplace,
+        "project_marketplace": table.marketplace,
+        "project_domain": table.domain,
         "project_primary_asin": project.primary_asin,
-        "project_asin_count": project.asin_count,
-        "project_keywords_count": project.keywords_count,
+        "project_asin_count": table.asin_count,
+        "project_keywords_count": table.keywords_count,
     }
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for item in asins:
+    for item in table.rows:
         if item.asin in seen:
-            logger.warning("Project %s: ASIN %s shown twice; kept the first", project.project_id, item.asin)
+            logger.warning("Project %s: ASIN %s shown twice; kept the first", table.project_id, item.asin)
             continue
         seen.add(item.asin)
         v = item.values
@@ -138,15 +139,20 @@ def build_rows(
             row["top_level_category"] = None
         rows.append(_fit({column: row.get(column) for column in OUTPUT_COLUMNS}))
 
-    if project.asin_count is not None and project.asin_count != len(rows):
+    return rows
+
+
+def check_card_total(project: ProjectCard, tables: list[MarketplaceTable]) -> None:
+    """Warn when the card's "N ASINs" is not the sum of its marketplaces' tables."""
+    shown = sum(len(t.rows) for t in tables)
+    if project.asin_count is not None and project.asin_count != shown:
         logger.warning(
-            "Project %s (%s): the card says %d ASINs but the project page shows %d",
+            "Project %s (%s): the card says %d ASINs but its marketplace pages show %d",
             project.project_id,
             project.name,
             project.asin_count,
-            len(rows),
+            shown,
         )
-    return rows
 
 
 def check_not_empty(projects: list[ProjectCard], rows: list[dict[str, Any]]) -> None:

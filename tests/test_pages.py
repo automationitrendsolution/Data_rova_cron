@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.asins_page import missing_columns, parse_product_cell, parse_table
+from app.asins_page import missing_columns, parse_marketplace, parse_product_cell, parse_table, project_id_of
 from app.exceptions import ScrapeError
 from app.projects_page import parse_card
 
@@ -102,3 +102,17 @@ class TestTable:
 
     def test_rows_without_an_asin_are_skipped(self) -> None:
         assert parse_table(HEADERS, [{"cells": ["Loading..."]}, {"cells": []}]) == []
+
+
+class TestMarketplaceSwitcher:
+    def test_parses_an_entry(self) -> None:
+        m = parse_marketplace({"id": "marketplace-item-1", "text": "amazon.ca\n5 ASINs\n42 Keywords"})
+        assert (m.domain, m.code, m.asin_count, m.keywords_count) == ("amazon.ca", "CA", 5, 42)
+
+    def test_singular_counts_and_uk(self) -> None:
+        m = parse_marketplace({"id": "marketplace-item-0", "text": "amazon.co.uk\n1 ASIN\n0 Keyword"})
+        assert (m.code, m.asin_count, m.keywords_count) == ("UK", 1, 0)
+
+    def test_project_id_of_url(self) -> None:
+        assert project_id_of("https://app.datarova.com/projects/37440/asins/B0C36YRQWN") == 37440
+        assert project_id_of("https://app.datarova.com/keyword-spy") is None

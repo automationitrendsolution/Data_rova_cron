@@ -218,6 +218,8 @@ class TestShippedCatalogue:
         "projects_page_caption",
         "asins_table_header",
         "asins_empty_state",
+        "marketplace_button",
+        "marketplace_item",
         "asins_rows_per_page_button",
         "asins_rows_per_page_option",
     )

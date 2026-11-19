@@ -7,16 +7,17 @@ from decimal import Decimal
 import pytest
 
 from app.exceptions import EmptyDataError
-from app.processor import build_rows, check_not_empty, currency_of, to_float, to_int, to_money
+from app.processor import build_rows, check_card_total, check_not_empty, currency_of, to_float, to_int, to_money
 from app.schema import OUTPUT_COLUMNS, STRING_LENGTHS
-from tests.conftest import asin, project
+from tests.conftest import asin, project, table
 
 DAY = date(2026, 11, 18)
 AT = datetime(2026, 11, 18, 10, 0, 0)
 
 
-def rows_for(proj, items):
-    return build_rows(proj, items, scrape_date=DAY, scraped_at=AT)
+def rows_for(proj, items, **kwargs):
+    return build_rows(proj, table(items, project_id=proj.project_id, **kwargs),
+                      scrape_date=DAY, scraped_at=AT)
 
 
 class TestConverters:
@@ -53,6 +54,8 @@ class TestBuildRows:
         assert row["scrape_date"] == DAY
         assert row["scraped_at"] == AT
         assert row["project_id"] == 74199
+        assert row["project_group_id"] == 74199
+        assert row["project_domain"] == "amazon.com"
         assert row["project_name"] == "Project 74199"
         assert row["project_marketplace"] == "US"
         assert row["project_primary_asin"] == "B07K6YKZBK"
@@ -97,14 +100,24 @@ class TestBuildRows:
         [row] = rows_for(project(asins=("B0HN1SX55L",)), [item])
         assert len(row["top_level_category"]) == STRING_LENGTHS["top_level_category"]
 
-    def test_card_count_mismatch_is_logged(self, caplog: pytest.LogCaptureFixture) -> None:
+    def test_other_marketplace_has_its_own_project_id(self) -> None:
+        card = project(74293, asins=("B0C36YRQWN",))
+        other = table([asin("B0D2DJJF56")], project_id=37440, marketplace="CA", domain="amazon.ca")
+
+        [row] = build_rows(card, other, scrape_date=DAY, scraped_at=AT)
+
+        assert row["project_id"] == 37440
+        assert row["project_group_id"] == 74293
+        assert row["project_marketplace"] == "CA"
+
+    def test_card_total_mismatch_is_logged(self, caplog: pytest.LogCaptureFixture) -> None:
         caplog.set_level("WARNING", logger="datarova")
         logging.getLogger("datarova").propagate = True
         try:
-            rows_for(project(asins=("B000000001", "B000000002")), [asin("B000000001")])
+            check_card_total(project(asins=("B000000001", "B000000002")), [table([asin("B000000001")])])
         finally:
             logging.getLogger("datarova").propagate = False
-        assert "the card says 2 ASINs but the project page shows 1" in caplog.text
+        assert "the card says 2 ASINs but its marketplace pages show 1" in caplog.text
 
 
 class TestCheckNotEmpty:

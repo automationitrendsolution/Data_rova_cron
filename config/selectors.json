@@ -37,6 +37,12 @@
   "asins_empty_state": [
     "text=/Here you can follow up on the performance of ASINs/i"
   ],
+  "marketplace_button": [
+    "#marketplace-button"
+  ],
+  "marketplace_item": [
+    "[id^='marketplace-item-']"
+  ],
   "asins_rows_per_page_button": [
     "#rows-per-page-button",
     "button:near(:text('Rows per page'))"

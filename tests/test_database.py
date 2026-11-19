@@ -9,7 +9,7 @@ from sqlalchemy.pool import StaticPool
 from app.database import DataRovaRepository
 from app.processor import build_rows
 from app.schema import create_table_sql
-from tests.conftest import TABLE, asin, project
+from tests.conftest import TABLE, asin, project, table
 
 DAY1 = date(2026, 11, 17)
 DAY2 = date(2026, 11, 18)
@@ -18,7 +18,7 @@ DAY2 = date(2026, 11, 18)
 def rows(day: date, codes: tuple[str, ...] = ("B000000001", "B000000002")):
     return build_rows(
         project(asins=codes),
-        [asin(code) for code in codes],
+        table([asin(code) for code in codes]),
         scrape_date=day,
         scraped_at=datetime.combine(day, datetime.min.time()),
     )

@@ -15,7 +15,7 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.pool import StaticPool
 
-from app.asins_page import AsinRow
+from app.asins_page import AsinRow, MarketplaceTable
 from app.config import Settings, load_settings
 from app.database import DataRovaRepository
 from app.projects_page import ProjectCard
@@ -127,4 +127,17 @@ def asin(code: str = "B0HN1SX55L", *, primary: bool = False, **values: str) -> A
         title="Windshield Cover for Ice and Snow",
         image_url="https://m.media-amazon.com/images/I/41mbi6iVzOL._SL128_.jpg",
         values=shown,
+    )
+
+
+def table(rows: list[AsinRow], *, project_id: int = 74199, marketplace: str = "US",
+          domain: str = "amazon.com") -> MarketplaceTable:
+    """One marketplace's ASIN table."""
+    return MarketplaceTable(
+        project_id=project_id,
+        marketplace=marketplace,
+        domain=domain,
+        asin_count=len(rows),
+        keywords_count=39,
+        rows=rows,
     )

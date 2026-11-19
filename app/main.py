@@ -22,7 +22,7 @@ from datetime import date
 from enum import Enum
 from typing import Any, TypeVar
 
-from .asins_page import AsinRow, AsinsPage
+from .asins_page import SLOW_TABLE_TIMEOUT_MS, AsinsPage, MarketplaceTable
 from .auth import ensure_signed_in
 from .browser import BrowserSession
 from .config import Settings
@@ -40,7 +40,7 @@ from .exceptions import (
 )
 from .logging_config import get_logger
 from .maintenance import cleanup_old_files
-from .processor import build_rows, check_not_empty
+from .processor import build_rows, check_card_total, check_not_empty
 from .projects_page import ProjectCard, ProjectsPage
 from .retry import retry_call
 from .runlock import run_lock
@@ -63,8 +63,28 @@ class DataRovaSite:
     def read_projects(self) -> list[ProjectCard]:
         return self._projects.read_all()
 
-    def read_asins(self, project: ProjectCard) -> list[AsinRow]:
-        return self._asins.read(project)
+    def read_asins(self, project: ProjectCard) -> list[MarketplaceTable]:
+        """Every marketplace table of ``project``, re-read once when they do not
+        add up to the card's "N ASINs" (usually a marketplace missed while the
+        switcher was still rendering)."""
+        tables = self._asins.read(project)
+        if project.asin_count is not None and _total(tables) != project.asin_count:
+            logger.info(
+                "Project %s: found %d of the card's %d ASINs; reading it again",
+                project.project_id, _total(tables), project.asin_count,
+            )
+            again = self._asins.read(project)
+            if _total(again) >= _total(tables):
+                tables = again
+        return tables
+
+    def use_slow_mode(self) -> None:
+        """Wait longer for each page (end-of-run second pass)."""
+        self._asins.table_timeout_ms = SLOW_TABLE_TIMEOUT_MS
+
+
+def _total(tables: list[MarketplaceTable]) -> int:
+    return sum(len(t.rows) for t in tables)
 
 T = TypeVar("T")
 
@@ -398,35 +418,68 @@ class DataRovaPipeline:
         scrape_date: date,
         scraped_at: Any,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        """Every project's ASIN rows.  One failed project fails the run.
+        """Every project's ASIN rows.
 
-        A partial snapshot is never saved: the load replaces the whole day, so
-        a missing project would silently disappear from that day.
+        Projects whose page will not load are put aside and tried again at the
+        end of the run, waiting longer for each page -- DataRova's slow pages
+        usually load once it has had a few minutes.  A project that still fails
+        fails the run: a partial snapshot is never saved, because the load
+        replaces the whole day and a missing project would silently disappear.
         """
         rows: list[dict[str, Any]] = []
         raw: dict[str, Any] = {}
+        results: dict[int, list[MarketplaceTable]] = {}
+        deferred: list[ProjectCard] = []
+
         for index, project in enumerate(projects, start=1):
             if index > 1 and self.settings.page_delay_seconds:
                 time.sleep(self.settings.page_delay_seconds)
-            pid = project.project_id
-            asins = self._retry(
-                f"ASINs of project {pid}", lambda project=project: site.read_asins(project)
-            )
-            raw[str(pid)] = [asdict(a) for a in asins]
-            project_rows = build_rows(
-                project, asins, scrape_date=scrape_date, scraped_at=scraped_at
-            )
-            rows.extend(project_rows)
+            try:
+                results[project.project_id] = self._retry(
+                    f"ASINs of project {project.project_id}",
+                    lambda project=project: site.read_asins(project),
+                )
+            except (NavigationError, ScrapeError) as exc:
+                if not exc.transient:
+                    raise
+                logger.warning(
+                    "[%d/%d] %s (%s): page would not load; will try again at the end",
+                    index, len(projects), project.name, project.project_id,
+                )
+                deferred.append(project)
+                continue
+            self._log_project(index, len(projects), project, results[project.project_id])
+
+        if deferred:
             logger.info(
-                "[%d/%d] %s (%s, %s): %d ASIN(s)",
-                index,
-                len(projects),
-                project.name,
-                pid,
-                project.marketplace or "?",
-                len(project_rows),
+                "Trying %d slow project(s) again, waiting up to %d s per page",
+                len(deferred), SLOW_TABLE_TIMEOUT_MS // 1000,
             )
+            site.use_slow_mode()
+            for index, project in enumerate(deferred, start=1):
+                results[project.project_id] = self._retry(
+                    f"ASINs of project {project.project_id} (second pass)",
+                    lambda project=project: site.read_asins(project),
+                )
+                self._log_project(index, len(deferred), project, results[project.project_id], "retry ")
+
+        for project in projects:
+            pid = project.project_id
+            tables = results[pid]
+            raw[str(pid)] = [asdict(t) for t in tables]
+            check_card_total(project, tables)
+            for table in tables:
+                rows.extend(
+                    build_rows(project, table, scrape_date=scrape_date, scraped_at=scraped_at)
+                )
         return rows, raw
+
+    @staticmethod
+    def _log_project(
+        index: int, total: int, project: ProjectCard, tables: list[MarketplaceTable], prefix: str = ""
+    ) -> None:
+        parts = ", ".join(f"{t.marketplace or '?'} {len(t.rows)}" for t in tables)
+        logger.info("[%s%d/%d] %s (%s): %s ASIN(s)", prefix, index, total, project.name, project.project_id, parts)
 
     def _save_raw(self, projects: list[ProjectCard], raw: dict[str, Any]) -> None:
         """With KEEP_RAW_JSON, keep the scraped page values for later checking."""

@@ -1,6 +1,18 @@
 """A project's ASINs page (app.datarova.com/projects/{id}/asins/{primary_asin}).
 
-The page shows one table, rendered as a header table and a body table::
+One project card on the projects page can hold several **marketplaces**
+(amazon.com, amazon.ca, ...).  Each marketplace is its own DataRova project
+with its own id and its own ASIN table; the page shows one at a time and a
+switcher (``#marketplace-button``) lists them all::
+
+    Project Marketplace
+      amazon.com   1 ASIN  | 0 Keyword
+      amazon.ca    5 ASINs | 42 Keywords      <- click: URL becomes /projects/37440/...
+
+So for every card the reader opens the switcher, then reads the table of
+every marketplace that has ASINs.
+
+The table is rendered as a header table and a body table::
 
     Product (11) | Price | Reviews | Rating | Visibility | Keywords in Top 10 |
     Choice Badges | Latest BSR | Top Level Category
@@ -11,14 +23,14 @@ column hidden or moved with DataRova's "Edit Columns" only empties that field.
 
 The page keeps polling in the background, so it never goes network-idle: the
 code waits for the table itself.  The table is paginated at 25 rows; the page
-size is raised to 250 when a project has more ASINs than one page.
+size is raised to 250 when a marketplace has more ASINs than one page.
 """
 
 from __future__ import annotations
 
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .browser import BrowserSession
 from .exceptions import NavigationError, ScrapeError
@@ -30,10 +42,44 @@ logger = get_logger("asins_page")
 
 _PRODUCT_TOTAL = re.compile(r"Product\s*\((\d[\d,]*)\)", re.IGNORECASE)
 _ASIN = re.compile(r"^[A-Z0-9]{10}$")
+_PROJECT_ID = re.compile(r"/projects/(\d+)")
+_DOMAIN = re.compile(r"\bamazon\.[a-z.]+\b", re.IGNORECASE)
+_COUNT = re.compile(r"([\d,]+)\s+(ASINs?|Keywords?)\b", re.IGNORECASE)
 _PRIMARY_BADGE = "primary asin"
 
 #: Largest page size the table offers.
 _ALL = "250"
+
+#: How long one page may show its loading placeholders before it is reloaded
+#: (by the caller's retry).  DataRova sometimes hangs on them for a minute or
+#: more; projects that still fail are tried again at the end of the run with
+#: ``SLOW_TABLE_TIMEOUT_MS``.
+TABLE_TIMEOUT_MS = 60_000
+SLOW_TABLE_TIMEOUT_MS = 120_000
+
+#: Amazon domain -> marketplace code.
+MARKETPLACES: dict[str, str] = {
+    "amazon.com": "US",
+    "amazon.ca": "CA",
+    "amazon.com.mx": "MX",
+    "amazon.com.br": "BR",
+    "amazon.co.uk": "UK",
+    "amazon.de": "DE",
+    "amazon.fr": "FR",
+    "amazon.it": "IT",
+    "amazon.es": "ES",
+    "amazon.nl": "NL",
+    "amazon.se": "SE",
+    "amazon.pl": "PL",
+    "amazon.com.be": "BE",
+    "amazon.com.tr": "TR",
+    "amazon.ae": "AE",
+    "amazon.sa": "SA",
+    "amazon.in": "IN",
+    "amazon.co.jp": "JP",
+    "amazon.com.au": "AU",
+    "amazon.sg": "SG",
+}
 
 #: Header -> field.  Headers are compared lower-cased with spaces collapsed.
 HEADER_FIELDS: dict[str, str] = {
@@ -66,6 +112,19 @@ _READ_TABLE_JS = """
 }
 """
 
+_READ_MARKETPLACES_JS = """
+() => {
+    const button = document.querySelector("#marketplace-button img");
+    return {
+        current: button ? button.getAttribute("src") : null,
+        items: [...document.querySelectorAll("[id^='marketplace-item-']")].map(el => {
+            const img = el.querySelector("img");
+            return { id: el.id, text: el.innerText, flag: img ? img.getAttribute("src") : null };
+        }),
+    };
+}
+"""
+
 
 @dataclass(frozen=True)
 class AsinRow:
@@ -76,6 +135,33 @@ class AsinRow:
     title: str | None
     image_url: str | None
     values: dict[str, str]
+
+
+@dataclass(frozen=True)
+class Marketplace:
+    """One entry of the project's marketplace switcher."""
+
+    element_id: str
+    domain: str | None
+    asin_count: int | None
+    keywords_count: int | None
+    flag: str | None = None
+
+    @property
+    def code(self) -> str | None:
+        return MARKETPLACES.get((self.domain or "").lower()) if self.domain else None
+
+
+@dataclass
+class MarketplaceTable:
+    """The ASIN table of one marketplace of one project card."""
+
+    project_id: int
+    marketplace: str | None
+    domain: str | None
+    asin_count: int | None
+    keywords_count: int | None
+    rows: list[AsinRow] = field(default_factory=list)
 
 
 def _norm(header: str) -> str:
@@ -112,10 +198,29 @@ def parse_table(headers: list[str], rows: list[dict]) -> list[AsinRow]:
     return parsed
 
 
+def parse_marketplace(item: dict) -> Marketplace:
+    """``{"text": "amazon.ca\\n5 ASINs\\n42 Keywords"}`` -> Marketplace."""
+    text = item.get("text") or ""
+    domain = _DOMAIN.search(text)
+    counts = {kind.lower().rstrip("s"): int(n.replace(",", "")) for n, kind in _COUNT.findall(text)}
+    return Marketplace(
+        element_id=item.get("id") or "",
+        domain=domain.group(0).lower() if domain else None,
+        asin_count=counts.get("asin"),
+        keywords_count=counts.get("keyword"),
+        flag=item.get("flag"),
+    )
+
+
 def missing_columns(headers: list[str]) -> list[str]:
     """Expected columns the table does not show (hidden with "Edit Columns")."""
     shown = {_norm(h) for h in headers}
     return [h for h in HEADER_FIELDS if h not in shown]
+
+
+def project_id_of(url: str) -> int | None:
+    match = _PROJECT_ID.search(url)
+    return int(match.group(1)) if match else None
 
 
 class AsinsPage:
@@ -124,34 +229,131 @@ class AsinsPage:
         self.settings = session.settings
         self.page = session.page
         self._warned_missing = False
+        #: Loading wait per page; raised for the end-of-run second pass.
+        self.table_timeout_ms = TABLE_TIMEOUT_MS
 
-    def read(self, project: ProjectCard) -> list[AsinRow]:
-        """Every ASIN row of ``project``.
+    # -- public ------------------------------------------------------------------
+
+    def read(self, card: ProjectCard) -> list[MarketplaceTable]:
+        """The ASIN table of every marketplace of ``card``.
 
         Raises:
-            NavigationError: The page or its table did not load.
-            ScrapeError: The table showed fewer rows than its own header count.
+            NavigationError: A page or its table did not load.
+            ScrapeError: A table showed fewer rows than its own header count.
         """
-        page = self.page
-        timeout = self.settings.browser_timeout_ms
-        try:
-            page.goto(project.url, wait_until="domcontentloaded")
-        except Exception as exc:
-            raise NavigationError(f"Could not open project {project.project_id}: {exc}") from exc
+        self._goto(card.url, card.project_id)
+        total = self._wait_for_total(card.project_id)
+        current_id = project_id_of(self.page.url) or card.project_id
 
-        total = self._wait_for_total(project, timeout)
+        marketplaces, current_flag = self._read_marketplaces()
+        if not marketplaces:
+            # No switcher: a single-marketplace project.
+            rows = self._read_rows(card.project_id, total)
+            return [MarketplaceTable(current_id, None, None, total, card.keywords_count, rows)]
+
+        current = next((m for m in marketplaces if m.flag and m.flag == current_flag), None)
+        if current is None and len(marketplaces) == 1:
+            current = marketplaces[0]
+        if current is None:
+            raise ScrapeError(
+                f"Project {card.project_id}: cannot tell which marketplace the page shows",
+                transient=True,
+            )
+
+        tables = [self._table(current_id, current, self._read_rows(current_id, total))]
+        read_ids = {current_id}
+        for other in marketplaces:
+            if other is current:
+                continue
+            if other.asin_count == 0:
+                tables.append(self._table(None, other, []))
+                continue
+            other_id = self._switch_to(other, read_ids, card.project_id)
+            read_ids.add(other_id)
+            other_total = self._wait_for_total(other_id)
+            tables.append(self._table(other_id, other, self._read_rows(other_id, other_total)))
+        return tables
+
+    # -- marketplaces ----------------------------------------------------------------
+
+    def _table(self, project_id: int | None, m: Marketplace, rows: list[AsinRow]) -> MarketplaceTable:
+        if m.asin_count is not None and m.asin_count != len(rows):
+            logger.warning(
+                "Project %s %s: the switcher says %d ASINs but the table shows %d",
+                project_id or "?", m.domain, m.asin_count, len(rows),
+            )
+        return MarketplaceTable(
+            project_id=project_id or 0,
+            marketplace=m.code,
+            domain=m.domain,
+            asin_count=m.asin_count,
+            keywords_count=m.keywords_count,
+            rows=rows,
+        )
+
+    def _open_switcher(self) -> bool:
+        button = find_first(self.page, "marketplace_button", timeout_ms=5_000)
+        if button is None:
+            return False
+        button.click()
+        return find_first(self.page, "marketplace_item", timeout_ms=5_000) is not None
+
+    def _close_switcher(self) -> None:
+        self.page.keyboard.press("Escape")
+        self.page.wait_for_timeout(200)
+
+    def _read_marketplaces(self) -> tuple[list[Marketplace], str | None]:
+        if not self._open_switcher():
+            return [], None
+        # The list can render one entry at a time: read until it stops changing.
+        data = self.page.evaluate(_READ_MARKETPLACES_JS)
+        for _ in range(10):
+            self.page.wait_for_timeout(300)
+            again = self.page.evaluate(_READ_MARKETPLACES_JS)
+            if again == data:
+                break
+            data = again
+        self._close_switcher()
+        marketplaces = [parse_marketplace(item) for item in data["items"]]
+        return [m for m in marketplaces if m.domain], data.get("current")
+
+    def _switch_to(self, target: Marketplace, read_ids: set[int], card_id: int) -> int:
+        """Click ``target`` in the switcher and reload its page; returns its project id."""
+        if not self._open_switcher():
+            raise ScrapeError(f"Project {card_id}: marketplace switcher did not open", transient=True)
+        item = self.page.locator(f"#{target.element_id}")
+        item.get_by_text(target.domain or "", exact=True).first.click()
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            new_id = project_id_of(self.page.url)
+            if new_id is not None and new_id not in read_ids:
+                # A fresh load, so the table cannot still be the previous one.
+                self._goto(self.page.url, new_id)
+                return new_id
+            self.page.wait_for_timeout(250)
+        raise ScrapeError(
+            f"Project {card_id}: switching to {target.domain} did not open its page", transient=True
+        )
+
+    # -- table -----------------------------------------------------------------
+
+    def _goto(self, url: str, project_id: int) -> None:
+        try:
+            self.page.goto(url, wait_until="domcontentloaded")
+        except Exception as exc:
+            raise NavigationError(f"Could not open project {project_id}: {exc}") from exc
+
+    def _read_rows(self, project_id: int, total: int) -> list[AsinRow]:
         if total == 0:
             return []
-
         if total > 25:
             self._show_all()
         if total > int(_ALL):
             raise ScrapeError(
-                f"Project {project.project_id} has {total} ASINs, more than one page of {_ALL}",
+                f"Project {project_id} has {total} ASINs, more than one page of {_ALL}",
                 transient=False,
             )
-
-        headers, rows = self._wait_for_rows(total, timeout)
+        headers, rows = self._wait_for_rows(total)
         if not self._warned_missing and (hidden := missing_columns(headers)):
             logger.warning(
                 "The ASIN table does not show: %s (hidden with 'Edit Columns'?) -- saved as empty",
@@ -160,23 +362,20 @@ class AsinsPage:
             self._warned_missing = True
         parsed = parse_table(headers, rows)
         if len(parsed) != total:
-            self.session.capture_failure(f"asins-incomplete-{project.project_id}")
+            self.session.capture_failure(f"asins-incomplete-{project_id}")
             raise ScrapeError(
-                f"Project {project.project_id}: the table says {total} ASINs but "
-                f"{len(parsed)} could be read",
+                f"Project {project_id}: the table says {total} ASINs but {len(parsed)} could be read",
                 transient=True,
             )
         return parsed
 
-    # -- waits -----------------------------------------------------------------
-
-    def _wait_for_total(self, project: ProjectCard, timeout_ms: int) -> int:
+    def _wait_for_total(self, project_id: int) -> int:
         """The ASIN count from the "Product (N)" header, once the page shows it.
 
-        A project with no ASINs shows an "Add ASINs" placeholder instead of a
-        table; that is 0, not an error.
+        A marketplace with no ASINs shows an "Add ASINs" placeholder instead
+        of a table; that is 0, not an error.
         """
-        deadline = time.monotonic() + timeout_ms / 1000
+        deadline = time.monotonic() + self.table_timeout_ms / 1000
         header = None
         empty_seen = 0
         while header is None:
@@ -188,22 +387,23 @@ class AsinsPage:
             if find_first(self.page, "asins_empty_state", timeout_ms=300) is not None:
                 empty_seen += 1
                 if empty_seen >= 3:
-                    logger.debug("Project %s has no ASINs (empty page)", project.project_id)
+                    logger.debug("Project %s has no ASINs (empty page)", project_id)
                     return 0
             else:
                 empty_seen = 0
             if time.monotonic() > deadline:
-                self.session.capture_failure(f"asins-table-missing-{project.project_id}")
-                raise NavigationError(f"Project {project.project_id}: the ASIN table did not appear")
+                self.session.capture_failure(f"asins-table-missing-{project_id}")
+                raise NavigationError(
+                    f"Project {project_id}: the ASIN table did not appear within "
+                    f"{self.table_timeout_ms // 1000} s"
+                )
         while True:
             match = _PRODUCT_TOTAL.search(header.inner_text())
             if match:
                 return int(match.group(1).replace(",", ""))
             if time.monotonic() > deadline:
-                self.session.capture_failure(f"asins-count-missing-{project.project_id}")
-                raise NavigationError(
-                    f"Project {project.project_id}: the table never showed its ASIN count"
-                )
+                self.session.capture_failure(f"asins-count-missing-{project_id}")
+                raise NavigationError(f"Project {project_id}: the table never showed its ASIN count")
             self.page.wait_for_timeout(250)
 
     def _show_all(self) -> None:
@@ -220,9 +420,9 @@ class AsinsPage:
             raise ScrapeError(f"ASIN table page size {_ALL} not offered", transient=True)
         option.click()
 
-    def _wait_for_rows(self, total: int, timeout_ms: int) -> tuple[list[str], list[dict]]:
+    def _wait_for_rows(self, total: int) -> tuple[list[str], list[dict]]:
         """Read the table once it holds ``total`` rows and stops changing."""
-        deadline = time.monotonic() + timeout_ms / 1000
+        deadline = time.monotonic() + self.table_timeout_ms / 1000
         previous: object = None
         while True:
             data = self.page.evaluate(_READ_TABLE_JS)
