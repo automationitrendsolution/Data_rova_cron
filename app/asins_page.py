@@ -223,19 +223,33 @@ def missing_columns(headers: list[str]) -> list[str]:
     return [h for h in HEADER_FIELDS if h not in shown]
 
 
+_URL_ASIN = re.compile(r"/projects/\d+/[a-z-]+/([A-Z0-9]{10})(?:[/?#]|$)")
+
+
+def asins_url_of(app_url: str, url: str, project_id: int) -> str:
+    """The ASINs-tab address of ``project_id``, keeping the ASIN of ``url`` if
+    it has one (``/projects/69261/ranks/bsr`` -> ``/projects/69261/asins``)."""
+    match = _URL_ASIN.search(url)
+    return f"{app_url}/projects/{project_id}/asins" + (f"/{match.group(1)}" if match else "")
+
+
 def project_id_of(url: str) -> int | None:
     match = _PROJECT_ID.search(url)
     return int(match.group(1)) if match else None
 
 
 class AsinsPage:
+    @property
+    def page(self):
+        """The session's current page (a new one after a browser restart)."""
+        return self.session.page
+
     def __init__(self, session: BrowserSession) -> None:
         self.session = session
         self.settings = session.settings
-        self.page = session.page
         self._warned_missing = False
         #: Loading wait per page; raised for the end-of-run second pass.
-        self.table_timeout_ms = TABLE_TIMEOUT_MS
+        self.table_timeout_ms = session.settings.table_timeout_ms
 
     # -- public ------------------------------------------------------------------
 
@@ -339,7 +353,9 @@ class AsinsPage:
             new_id = project_id_of(self.page.url)
             if new_id is not None and new_id not in read_ids:
                 # A fresh load, so the table cannot still be the previous one.
-                self._goto(self.page.url, new_id)
+                # DataRova lands on the tab used last (Ranks, BSR...): always go
+                # to the ASINs tab of the new marketplace's project.
+                self._goto(asins_url_of(self.settings.app_url, self.page.url, new_id), new_id)
                 return new_id
             self.page.wait_for_timeout(250)
         raise ScrapeError(

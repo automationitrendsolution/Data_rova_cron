@@ -17,7 +17,7 @@ from .timeutils import now_utc
 logger = get_logger("maintenance")
 
 #: Names DataRova creates: "<UTC timestamp>_<label>.<ext>".
-_OWNED_NAME = re.compile(r"^\d{8}T\d{6}Z_.+\.(json|png)$", re.IGNORECASE)
+_OWNED_NAME = re.compile(r"^\d{8}T\d{6}Z_.+\.(json|png|csv)$", re.IGNORECASE)
 
 
 def cleanup_old_files(settings: Settings) -> int:

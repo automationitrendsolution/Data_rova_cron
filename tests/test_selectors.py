@@ -225,6 +225,18 @@ class TestShippedCatalogue:
         "keywords_table_header",
         "keywords_empty_state",
         "keywords_next_page",
+        "ranks_by_asin_tab",
+        "ranks_bsr_tab",
+        "ranks_asin_button",
+        "ranks_asin_search",
+        "ranks_keyword_header",
+        "ranks_asin_header",
+        "ranks_add_asin",
+        "bsr_not_connected",
+        "ranks_export_button",
+        "ranks_export_daily",
+        "export_submitted",
+        "download_report_row",
     )
 
     def test_every_used_key_is_configured(self) -> None:
@@ -239,4 +251,6 @@ class TestShippedCatalogue:
         app_dir = Path(__file__).resolve().parent.parent / "app"
         source = "\n".join(path.read_text(encoding="utf-8") for path in app_dir.glob("*.py"))
         used = set(re.findall(r'find_first\(\s*(?:self\.)?page,\s*"([a-z_]+)"', source))
-        assert used == set(self.USED_KEYS)
+        assert used <= set(self.USED_KEYS)
+        # Keys passed through a variable still appear as a string literal.
+        assert [k for k in self.USED_KEYS if f'"{k}"' not in source] == []

@@ -27,6 +27,8 @@ INDIA_TZ = ZoneInfo("Asia/Kolkata")
 DEFAULT_APP_URL = "https://app.datarova.com"
 DEFAULT_TABLE = "datarova_all_data"
 DEFAULT_KEYWORDS_TABLE = "datarova_keywords"
+DEFAULT_RANKS_TABLE = "datarova_ranks"
+DEFAULT_BSR_TABLE = "datarova_bsr"
 
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 _FALSE_VALUES = {"0", "false", "no", "off"}
@@ -186,7 +188,18 @@ class Settings:
     lock_file: Path = PROJECT_ROOT / "data" / "datarova.lock"
 
     headless: bool = True
-    browser_timeout_ms: int = 60_000
+    #: Page loads and clicks.
+    browser_timeout_ms: int = 300_000
+    #: How long a table may stay on DataRova's loading placeholders (doubled
+    #: for the end-of-run second pass).
+    table_timeout_ms: int = 300_000
+    #: No progress for this long = the browser is frozen: it is killed and
+    #: the run retries with a fresh one.
+    watchdog_minutes: int = 30
+    #: How long DataRova may take to build the exports of one batch.
+    export_wait_seconds: int = 3_600
+    #: Where a run records what it finished, to resume after a stop.
+    progress_file: Path = PROJECT_ROOT / "data" / "progress" / "current.json"
     slow_mo_ms: int = 0
     user_agent: str | None = None
     browser_args: tuple[str, ...] = _DEFAULT_BROWSER_ARGS
@@ -202,6 +215,14 @@ class Settings:
     keywords_table: str = DEFAULT_KEYWORDS_TABLE
     #: Also read every project's Keywords tab (slower: ~1 more page per marketplace).
     scrape_keywords: bool = True
+    ranks_table: str = DEFAULT_RANKS_TABLE
+    bsr_table: str = DEFAULT_BSR_TABLE
+    #: Also read every project's Ranks tab (ranks of every ASIN x keyword, and BSR).
+    scrape_ranks: bool = True
+    #: Days of ranks read for a project with no rank history yet (first run).
+    ranks_initial_days: int = 90
+    #: Days of ranks read on later runs (re-reads recent days DataRova may revise).
+    ranks_days: int = 7
     create_table: bool = False
 
     max_retries: int = 3
@@ -309,7 +330,12 @@ def load_settings(env_file: Path | str | None = None, *, override: bool = False)
 
     table = _get("DB_TABLE", DEFAULT_TABLE) or DEFAULT_TABLE
     keywords_table = _get("DB_KEYWORDS_TABLE", DEFAULT_KEYWORDS_TABLE) or DEFAULT_KEYWORDS_TABLE
-    for key, name in (("DB_TABLE", table), ("DB_KEYWORDS_TABLE", keywords_table)):
+    for key, name in (
+        ("DB_TABLE", table),
+        ("DB_KEYWORDS_TABLE", keywords_table),
+        ("DB_RANKS_TABLE", _get("DB_RANKS_TABLE", DEFAULT_RANKS_TABLE) or DEFAULT_RANKS_TABLE),
+        ("DB_BSR_TABLE", _get("DB_BSR_TABLE", DEFAULT_BSR_TABLE) or DEFAULT_BSR_TABLE),
+    ):
         if not name.replace("_", "").isalnum():
             raise ConfigurationError(f"{key} must be letters, digits and _ only, got {name!r}")
 
@@ -324,7 +350,11 @@ def load_settings(env_file: Path | str | None = None, *, override: bool = False)
         session_dir=_get_path("SESSION_DIR", data_dir / "session"),
         lock_file=_get_path("LOCK_FILE", data_dir / "datarova.lock"),
         headless=_get_bool("HEADLESS", True),
-        browser_timeout_ms=_get_int("BROWSER_TIMEOUT_MS", 60_000, minimum=1_000),
+        browser_timeout_ms=_get_int("BROWSER_TIMEOUT_MS", 300_000, minimum=1_000),
+        table_timeout_ms=_get_int("TABLE_TIMEOUT_MS", 300_000, minimum=1_000),
+        watchdog_minutes=_get_int("WATCHDOG_MINUTES", 30, minimum=5),
+        export_wait_seconds=_get_int("EXPORT_WAIT_SECONDS", 3_600, minimum=60),
+        progress_file=_get_path("PROGRESS_FILE", data_dir / "progress" / "current.json"),
         slow_mo_ms=_get_int("SLOW_MO_MS", 0, minimum=0),
         user_agent=_get("BROWSER_USER_AGENT"),
         browser_args=_browser_args(),
@@ -335,6 +365,11 @@ def load_settings(env_file: Path | str | None = None, *, override: bool = False)
         table=table,
         keywords_table=keywords_table,
         scrape_keywords=_get_bool("SCRAPE_KEYWORDS", True),
+        ranks_table=_get("DB_RANKS_TABLE", DEFAULT_RANKS_TABLE) or DEFAULT_RANKS_TABLE,
+        bsr_table=_get("DB_BSR_TABLE", DEFAULT_BSR_TABLE) or DEFAULT_BSR_TABLE,
+        scrape_ranks=_get_bool("SCRAPE_RANKS", True),
+        ranks_initial_days=_get_int("RANKS_INITIAL_DAYS", 90, minimum=1),
+        ranks_days=_get_int("RANKS_DAYS", 7, minimum=1),
         create_table=_get_bool("CREATE_TABLE", False),
         max_retries=_get_int("MAX_RETRIES", 3, minimum=1),
         retry_backoff_seconds=_get_float("RETRY_BACKOFF_SECONDS", 10.0, minimum=0.0),

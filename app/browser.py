@@ -125,6 +125,18 @@ class BrowserSession:
         self._page = self._context.pages[0] if self._context.pages else self._context.new_page()
         logger.info("Browser started (%s)", "hidden" if self.headless else "visible window")
 
+    def restart(self) -> None:
+        """Close Chromium and start a fresh one on the same saved session.
+
+        Long runs render very large rank tables; a fresh browser per project
+        keeps memory flat, and a frozen one (every page timing out) is
+        replaced instead of retried.
+        """
+        logger.info("Restarting the browser")
+        self.close()
+        self._captured = False
+        self.start()
+
     def close(self) -> None:
         """Close the context and stop the driver.  Never raises."""
         if self._context is not None:

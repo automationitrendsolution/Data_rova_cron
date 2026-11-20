@@ -23,7 +23,7 @@ import re
 import time
 from dataclasses import dataclass
 
-from .asins_page import TABLE_TIMEOUT_MS, MarketplaceTable, _norm
+from .asins_page import MarketplaceTable, _norm
 from .browser import BrowserSession
 from .exceptions import NavigationError, ScrapeError
 from .logging_config import get_logger
@@ -121,11 +121,15 @@ def keywords_url(asins_url: str) -> str:
 
 
 class KeywordsPage:
+    @property
+    def page(self):
+        """The session's current page (a new one after a browser restart)."""
+        return self.session.page
+
     def __init__(self, session: BrowserSession) -> None:
         self.session = session
         self.settings = session.settings
-        self.page = session.page
-        self.table_timeout_ms = TABLE_TIMEOUT_MS
+        self.table_timeout_ms = session.settings.table_timeout_ms
         self._warned_missing = False
 
     def read(self, table: MarketplaceTable) -> list[KeywordRow]:

@@ -20,10 +20,12 @@ from app.keywords_page import KeywordRow
 from app.config import Settings, load_settings
 from app.database import DataRovaRepository
 from app.projects_page import ProjectCard
-from app.schema import build_keywords_table, build_table
+from app.schema import build_bsr_table, build_keywords_table, build_ranks_table, build_table
 
 TABLE = "datarova_all_data"
 KEYWORDS_TABLE = "datarova_keywords"
+RANKS_TABLE = "datarova_ranks"
+BSR_TABLE = "datarova_bsr"
 
 #: Minimum environment a valid Settings needs.
 BASE_ENV = {
@@ -38,7 +40,7 @@ BASE_ENV = {
 
 _PREFIXES = (
     "DATAROVA_", "DB_", "RAW_", "LOG_", "SCREENSHOT_", "SESSION_", "LOCK_", "HEADLESS",
-    "BROWSER_", "VIEWPORT_", "SLOW_MO", "PAGE_DELAY", "DATA_TIMEZONE", "MAX_RETRIES",
+    "BROWSER_", "VIEWPORT_", "SLOW_MO", "PAGE_DELAY", "DATA_TIMEZONE", "SCRAPE_", "RANKS_", "PROGRESS_", "TABLE_TIMEOUT", "EXPORT_WAIT", "WATCHDOG", "MAX_RETRIES",
     "RETRY_", "CREATE_TABLE", "FILE_RETENTION", "KEEP_RAW",
 )
 
@@ -72,6 +74,7 @@ def settings(env: dict[str, str], tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     ):
         monkeypatch.setenv(key, str(tmp_path / name))
     monkeypatch.setenv("LOCK_FILE", str(tmp_path / "datarova.lock"))
+    monkeypatch.setenv("PROGRESS_FILE", str(tmp_path / "progress" / "current.json"))
     monkeypatch.setenv("RETRY_BACKOFF_SECONDS", "0")
     monkeypatch.setenv("PAGE_DELAY_SECONDS", "0")
     loaded = load_settings()
@@ -87,9 +90,15 @@ def repository() -> Iterator[DataRovaRepository]:
     )
     metadata, _table = build_table(TABLE)
     metadata.create_all(engine)
-    kw_metadata, _kw = build_keywords_table(KEYWORDS_TABLE)
-    kw_metadata.create_all(engine)
-    repo = DataRovaRepository(engine, table=TABLE, keywords_table=KEYWORDS_TABLE)
+    for builder, name in (
+        (build_keywords_table, KEYWORDS_TABLE),
+        (build_ranks_table, RANKS_TABLE),
+        (build_bsr_table, BSR_TABLE),
+    ):
+        builder(name)[0].create_all(engine)
+    repo = DataRovaRepository(
+        engine, table=TABLE, keywords_table=KEYWORDS_TABLE, ranks_table=RANKS_TABLE, bsr_table=BSR_TABLE
+    )
     repo.reflect()
     yield repo
     repo.dispose()

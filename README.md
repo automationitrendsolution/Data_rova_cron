@@ -123,6 +123,35 @@ not at all.
 About 23,000 keywords a day, so this table grows by ~23,000 rows per day.
 Set `SCRAPE_KEYWORDS=false` in `.env` to skip keywords (ASINs only, faster).
 
+### Ranks: `datarova_ranks` and `datarova_bsr`
+
+From each project marketplace's **Ranks** tab:
+
+| Table | One row per | Columns |
+|---|---|---|
+| `datarova_ranks` | day x project x ASIN x keyword | `project_id`, `asin`, `rank_date`, `keyword`, `ranked_asin`, `marketplace`, `project_name`, `organic_rank`, `sponsored_rank`, `amazon_choice`, `scraped_at` |
+| `datarova_bsr` | day x project x ASIN | `project_id`, `asin`, `rank_date`, `bsr`, `category`, `scraped_at` |
+
+- Ranks come from DataRova's own **Ranks by ASIN -> Export -> Daily Ranks**
+  CSV (the same file you get by hand), one export per ASIN. The run requests
+  the exports, waits for them on the **Download Report** page, downloads and
+  loads them. These exports show up in the team's Download Report list.
+- `asin` is the tracked ASIN; `ranked_asin` is the ASIN that actually ranked
+  (can be a variation of it). Ranks of 0 are stored as NULL (not ranked);
+  days with no organic rank, no sponsored rank and no badge are not stored.
+- BSR from 10,000 is rounded on the website ("38.5K"), so it is stored as 38500.
+- **First run: 90 days** for every project with no rank history yet (also a
+  project added later). **After that: the last 7 days** each run, replacing
+  those days, so DataRova's late corrections are picked up.
+- The newest day is the newest DataRova shows; it publishes the previous
+  day at about 13:40 IST.
+- Ranks are saved per project as soon as they are read. A project or ASIN
+  whose ranks fail is listed under "Ranks gaps" in the result; the run still
+  succeeds and the next run's 7 days fill the gap.
+- `uv run python run.py --rank-days 90` forces a window; `SCRAPE_RANKS=false` turns ranks off.
+
+Join ranks to the other tables on `project_id` + `asin` (+ `keyword`).
+
 ---
 
 ## Setup

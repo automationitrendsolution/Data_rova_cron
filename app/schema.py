@@ -173,9 +173,97 @@ def _ddl(table: Table) -> list[str]:
     return statements
 
 
-def create_table_sql(name: str, keywords_name: str | None = None) -> str:
+def build_ranks_table(name: str) -> tuple[MetaData, Table]:
+    """``datarova_ranks``: one row per day x project x ASIN x keyword, from the
+    Ranks tab ("Ranks by ASIN" -> Export -> Daily Ranks).  Days with no organic
+    rank, no sponsored rank and no Amazon's Choice badge are not stored.
+
+    The primary key is the natural key, so the table needs no second index:
+    a project's window is replaced with a range delete on the key prefix.
+    """
+    metadata = MetaData()
+    table = Table(
+        name,
+        metadata,
+        Column("project_id", BigInteger, primary_key=True, autoincrement=False),
+        Column("asin", String(20), primary_key=True),
+        Column("rank_date", Date, primary_key=True, comment="Day of the rank"),
+        Column(
+            "keyword",
+            String(KEYWORD_STRING_LENGTHS["keyword"]).with_variant(
+                mysql.VARCHAR(KEYWORD_STRING_LENGTHS["keyword"], charset="utf8mb4", collation="utf8mb4_bin"),
+                "mysql",
+            ),
+            primary_key=True,
+        ),
+        Column("ranked_asin", String(20), comment="ASIN that ranked (can be a variation of asin)"),
+        Column("marketplace", String(8)),
+        Column("project_name", String(255)),
+        Column("organic_rank", Integer, comment="NULL = not ranked organically"),
+        Column("sponsored_rank", Integer, comment="NULL = not ranked sponsored"),
+        Column("amazon_choice", String(3), comment="Amazon's Choice badge that day: Yes / No"),
+        Column("scraped_at", DateTime, nullable=False, comment="Run that read it (IST)"),
+        mysql_engine="InnoDB",
+        mysql_charset="utf8mb4",
+        mysql_collate="utf8mb4_unicode_ci",
+    )
+    return metadata, table
+
+
+def build_bsr_table(name: str) -> tuple[MetaData, Table]:
+    """``datarova_bsr``: one row per day x project x ASIN, from Ranks -> BSR.
+    BSR from 10,000 is rounded on the website ("38.5K" -> 38500)."""
+    metadata = MetaData()
+    table = Table(
+        name,
+        metadata,
+        Column("project_id", BigInteger, primary_key=True, autoincrement=False),
+        Column("asin", String(20), primary_key=True),
+        Column("rank_date", Date, primary_key=True, comment="Day of the BSR"),
+        Column("bsr", Integer, nullable=False, comment="Best Seller Rank; rounded from 10,000"),
+        Column("category", String(255), comment="BSR category shown on the page"),
+        Column("scraped_at", DateTime, nullable=False, comment="Run that read it (IST)"),
+        mysql_engine="InnoDB",
+        mysql_charset="utf8mb4",
+        mysql_collate="utf8mb4_unicode_ci",
+    )
+    return metadata, table
+
+
+def create_table_sql(
+    name: str,
+    keywords_name: str | None = None,
+    ranks_name: str | None = None,
+    bsr_name: str | None = None,
+) -> str:
     """The MySQL ``CREATE TABLE`` statements, for review before they are run."""
     statements = _ddl(build_table(name)[1])
     if keywords_name:
         statements += _ddl(build_keywords_table(keywords_name)[1])
+    if ranks_name:
+        statements += _ddl(build_ranks_table(ranks_name)[1])
+    if bsr_name:
+        statements += _ddl(build_bsr_table(bsr_name)[1])
     return "\n\n".join(statements)
+
+
+#: Name of the view that shows ``datarova_ranks`` exactly like DataRova's
+#: Daily Ranks export.
+RANKS_REPORT_VIEW = "datarova_ranks_report"
+
+
+def ranks_report_view_sql(ranks_table: str, view: str = RANKS_REPORT_VIEW) -> str:
+    """``CREATE OR REPLACE VIEW`` with the export's own column names."""
+    return (
+        f"CREATE OR REPLACE VIEW `{view}` AS\n"
+        f"SELECT\n"
+        f"    marketplace     AS `Marketplace`,\n"
+        f"    project_name    AS `Project`,\n"
+        f"    keyword         AS `Keyword`,\n"
+        f"    rank_date       AS `Date`,\n"
+        f"    ranked_asin     AS `Ranked ASIN`,\n"
+        f"    organic_rank    AS `Organic Rank`,\n"
+        f"    sponsored_rank  AS `Sponsored Rank`,\n"
+        f"    amazon_choice   AS `Amazon Choice Badge`\n"
+        f"FROM `{ranks_table}`"
+    )

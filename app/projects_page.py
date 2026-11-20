@@ -82,10 +82,16 @@ def parse_card(raw: dict, base_url: str) -> ProjectCard | None:
         dict.fromkeys(m.group(1).upper() for src in raw.get("flags") or [] if (m := _FLAG.search(src)))
     )
     text = "\n".join(lines)
+    project_id = int(match.group(1))
+    # The card links to whichever tab was used last (asins, keywords, ranks...):
+    # always go to the ASINs tab.
+    url = f"{base_url}/projects/{project_id}/asins"
+    if primary:
+        url += f"/{primary.upper()}"
     return ProjectCard(
-        project_id=int(match.group(1)),
+        project_id=project_id,
         name=name,
-        url=base_url + href.split("?")[0] if href.startswith("/") else href,
+        url=url,
         primary_asin=primary.upper() if primary else None,
         marketplaces=flags,
         asin_count=_count(_ASIN_COUNT, text),
@@ -94,10 +100,14 @@ def parse_card(raw: dict, base_url: str) -> ProjectCard | None:
 
 
 class ProjectsPage:
+    @property
+    def page(self):
+        """The session's current page (a new one after a browser restart)."""
+        return self.session.page
+
     def __init__(self, session: BrowserSession) -> None:
         self.session = session
         self.settings = session.settings
-        self.page = session.page
 
     def open(self) -> None:
         try:

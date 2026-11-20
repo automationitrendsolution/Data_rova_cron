@@ -47,6 +47,45 @@
     "nav#pagination button[aria-label='Go to next page']",
     "button[aria-label='Go to next page']"
   ],
+  "ranks_by_asin_tab": [
+    "text='Ranks by ASIN'"
+  ],
+  "ranks_bsr_tab": [
+    "text='BSR'"
+  ],
+  "ranks_asin_button": [
+    "button:has(span:text-matches('^[A-Z0-9]{10}$'))",
+    "button:has(img[alt='asin'])"
+  ],
+  "ranks_asin_search": [
+    "input[placeholder='Search ASIN']",
+    "input[placeholder*='ASIN' i]"
+  ],
+  "ranks_keyword_header": [
+    "table th:has-text('Keyword (')"
+  ],
+  "ranks_asin_header": [
+    "table th:has-text('ASINs (')",
+    "table th:has-text('ASIN (')"
+  ],
+  "bsr_not_connected": [
+    "text=/Connect Seller Central/i"
+  ],
+  "ranks_add_asin": [
+    "button:has-text('Add ASIN')"
+  ],
+  "ranks_export_button": [
+    "button:has-text('Export')"
+  ],
+  "ranks_export_daily": [
+    "text='Daily Ranks'"
+  ],
+  "export_submitted": [
+    "text=/export request has been submitted/i"
+  ],
+  "download_report_row": [
+    "table tbody tr td"
+  ],
   "marketplace_button": [
     "#marketplace-button"
   ],

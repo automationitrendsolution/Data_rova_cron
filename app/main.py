@@ -22,7 +22,7 @@ from datetime import date
 from enum import Enum
 from typing import Any, TypeVar
 
-from .asins_page import SLOW_TABLE_TIMEOUT_MS, AsinsPage, MarketplaceTable
+from .asins_page import AsinsPage, MarketplaceTable
 from .auth import ensure_signed_in
 from .browser import BrowserSession
 from .config import Settings
@@ -41,6 +41,9 @@ from .exceptions import (
 from .logging_config import get_logger
 from .maintenance import cleanup_old_files
 from .keywords_page import KeywordsPage
+from .ranks_page import RankData, RanksPage
+from .progress import Progress
+from .watchdog import Watchdog
 from .processor import build_keyword_rows, build_rows, check_card_total, check_not_empty
 from .projects_page import ProjectCard, ProjectsPage
 from .retry import retry_call
@@ -58,8 +61,18 @@ class DataRovaSite:
         self._projects = ProjectsPage(session)
         self._asins = AsinsPage(session)
         self._keywords = KeywordsPage(session) if keywords else None
+        self._ranks = RanksPage(session)
+
+    def read_ranks(self, project_id: int, asins: list[str], days: int) -> RankData:
+        """Ranks (every ASIN x keyword) and BSR of one project marketplace."""
+        return self._ranks.read(project_id, asins, days)
 
     def sign_in(self) -> None:
+        ensure_signed_in(self.session)
+
+    def restart_browser(self) -> None:
+        """Fresh Chromium on the same saved session (see BrowserSession.restart)."""
+        self.session.restart()
         ensure_signed_in(self.session)
 
     def read_projects(self) -> list[ProjectCard]:
@@ -101,9 +114,11 @@ class DataRovaSite:
 
     def use_slow_mode(self) -> None:
         """Wait longer for each page (end-of-run second pass)."""
-        self._asins.table_timeout_ms = SLOW_TABLE_TIMEOUT_MS
+        slow = self.session.settings.table_timeout_ms * 2
+        self._asins.table_timeout_ms = slow
+        self._ranks.table_timeout_ms = slow
         if self._keywords is not None:
-            self._keywords.table_timeout_ms = SLOW_TABLE_TIMEOUT_MS
+            self._keywords.table_timeout_ms = slow
 
 
 def _total(tables: list[MarketplaceTable]) -> int:
@@ -134,6 +149,10 @@ class RunOptions:
     echo_sql: bool = False
     #: Only these project ids (testing); None means every project.
     project_ids: set[int] | None = None
+    #: Force this many days of ranks (else 90 for new projects, 7 after).
+    rank_days: int | None = None
+    #: Ignore a stopped run's progress and start from the beginning.
+    fresh: bool = False
 
     @property
     def writes_database(self) -> bool:
@@ -168,6 +187,10 @@ class RunSummary:
     rows: int = 0
     rows_by_marketplace: dict[str, int] = field(default_factory=dict)
     keyword_rows: int = 0
+    rank_rows: int = 0
+    bsr_rows: int = 0
+    rank_projects: int = 0
+    rank_failures: list[str] = field(default_factory=list)
     write_result: WriteResult | None = None
     error: str | None = None
     advice: str | None = None
@@ -221,6 +244,14 @@ class RunSummary:
             write("ASIN rows", *lines)
         if self.keyword_rows:
             write("Keywords", f"{self.keyword_rows:,}")
+        if self.rank_projects:
+            write(
+                "Ranks",
+                f"{self.rank_rows:,} ranks and {self.bsr_rows:,} BSR values "
+                f"for {self.rank_projects} project marketplace(s)",
+            )
+        if self.rank_failures:
+            write("Ranks gaps", *self.rank_failures[:20])
         if self.write_result:
             lines = [
                 f"{self.write_result.table}: removed {self.write_result.deleted:,} old rows, "
@@ -403,6 +434,19 @@ class DataRovaPipeline:
         started_ist = now_in(self.settings.data_timezone, reference=self.summary.started_at)
         scrape_date = started_ist.date()
         scraped_at = started_ist.replace(tzinfo=None, microsecond=0)
+
+        # A full run records what it finishes; started again after a stop, it
+        # continues that run (same snapshot day) instead of starting over.
+        progress: Progress | None = None
+        if self.options.writes_database:
+            progress = Progress.start(
+                self.settings.progress_file, scrape_date, scraped_at, self.options.rank_days,
+                fresh=self.options.fresh,
+            )
+            scrape_date, scraped_at = progress.scrape_date, progress.scraped_at
+            if self.options.rank_days is None and progress.rank_days is not None:
+                self.options.rank_days = progress.rank_days
+        self._progress = progress
         self.summary.snapshot_date = scrape_date
 
         total = 5
@@ -410,7 +454,9 @@ class DataRovaPipeline:
         repository = self._open_repository()
         try:
             self._step(2, total, "Open DataRova and sign in")
-            with self._session_factory() as session:
+            with self._session_factory() as session, Watchdog(
+                self.settings.session_dir, limit_minutes=self.settings.watchdog_minutes
+            ):
                 site = self._site_factory(session)
                 self._retry("Sign-in", site.sign_in)
 
@@ -427,7 +473,7 @@ class DataRovaPipeline:
                 what = "ASINs and keywords" if self.settings.scrape_keywords else "ASINs"
                 self._step(4, total, f"Read the {what} of {len(projects)} project(s)")
                 rows, keyword_rows, raw = self._fetch_all_asins(
-                    site, projects, scrape_date, scraped_at
+                    site, projects, scrape_date, scraped_at, repository
                 )
 
             self._save_raw(projects, raw)
@@ -449,6 +495,8 @@ class DataRovaPipeline:
                     rows, keyword_rows if self.settings.scrape_keywords else None
                 ),
             )
+            if progress is not None:
+                progress.finish()
         finally:
             # Housekeeping also has to run when a run fails, but must never
             # mask the error.
@@ -467,6 +515,7 @@ class DataRovaPipeline:
         projects: list[ProjectCard],
         scrape_date: date,
         scraped_at: Any,
+        repository: DataRovaRepository | None = None,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
         """Every project's ASIN rows and keyword rows.
 
@@ -482,13 +531,24 @@ class DataRovaPipeline:
         results: dict[int, list[MarketplaceTable]] = {}
         deferred: list[ProjectCard] = []
 
+        progress: Progress | None = getattr(self, "_progress", None)
         for index, project in enumerate(projects, start=1):
+            if progress is not None and project.project_id in progress.projects:
+                results[project.project_id] = progress.projects[project.project_id]
+                logger.info(
+                    "[%d/%d] %s (%s): already read before the stop",
+                    index, len(projects), project.name, project.project_id,
+                )
+                self._ranks_of(site, project, results[project.project_id], repository, scraped_at)
+                continue
             if index > 1 and self.settings.page_delay_seconds:
                 time.sleep(self.settings.page_delay_seconds)
+            if index > 1:
+                self._fresh_browser(site)
             try:
                 results[project.project_id] = self._retry(
                     f"Project {project.project_id}",
-                    lambda project=project: site.read_project(project),
+                    self._restarting(site, lambda project=project: site.read_project(project)),
                 )
             except (NavigationError, ScrapeError) as exc:
                 if not exc.transient:
@@ -500,19 +560,26 @@ class DataRovaPipeline:
                 deferred.append(project)
                 continue
             self._log_project(index, len(projects), project, results[project.project_id])
+            if progress is not None:
+                progress.project_read(project.project_id, results[project.project_id])
+            self._ranks_of(site, project, results[project.project_id], repository, scraped_at)
 
         if deferred:
             logger.info(
                 "Trying %d slow project(s) again, waiting up to %d s per page",
-                len(deferred), SLOW_TABLE_TIMEOUT_MS // 1000,
+                len(deferred), self.settings.table_timeout_ms * 2 // 1000,
             )
             site.use_slow_mode()
             for index, project in enumerate(deferred, start=1):
+                self._fresh_browser(site)
                 results[project.project_id] = self._retry(
                     f"Project {project.project_id} (second pass)",
-                    lambda project=project: site.read_project(project),
+                    self._restarting(site, lambda project=project: site.read_project(project)),
                 )
                 self._log_project(index, len(deferred), project, results[project.project_id], "retry ")
+                if progress is not None:
+                    progress.project_read(project.project_id, results[project.project_id])
+                self._ranks_of(site, project, results[project.project_id], repository, scraped_at)
 
         for project in projects:
             pid = project.project_id
@@ -527,6 +594,127 @@ class DataRovaPipeline:
                     build_keyword_rows(project, table, scrape_date=scrape_date, scraped_at=scraped_at)
                 )
         return rows, keyword_rows, raw
+
+    def _ranks_of(
+        self,
+        site: DataRovaSite,
+        project: ProjectCard,
+        tables: list[MarketplaceTable],
+        repository: DataRovaRepository | None,
+        scraped_at: Any,
+    ) -> None:
+        """Read (and save) the ranks + BSR of every marketplace of ``project``.
+
+        Saved per marketplace straight away, in its own transaction, so a long
+        run keeps what it has read.  A failure is logged and the run goes on:
+        the next run's window re-reads the missed days.
+        """
+        if not self.settings.scrape_ranks:
+            return
+        saving = repository is not None and self.options.writes_database
+        for table in tables:
+            asins = [row.asin for row in table.rows]
+            if not asins or not table.project_id:
+                continue
+            if table.keywords_count == 0:
+                # Ranks are per keyword: a marketplace with no keywords has none,
+                # and its Ranks page has nothing to select.
+                logger.info("    ranks %s: no keywords tracked, so no ranks", table.project_id)
+                continue
+            pid = table.project_id
+            progress: Progress | None = getattr(self, "_progress", None)
+            if progress is not None and pid in progress.ranks_done:
+                logger.info("    ranks %s: already saved before the stop", pid)
+                continue
+            if self.options.rank_days:
+                days = self.options.rank_days
+            elif saving and not repository.has_rank_history(pid):
+                days = self.settings.ranks_initial_days
+            else:
+                days = self.settings.ranks_days
+            try:
+                data = self._retry(
+                    f"Ranks of project {pid}",
+                    self._restarting(site, lambda: site.read_ranks(pid, asins, days)),
+                )
+            except Exception as exc:  # noqa: BLE001 - ranks must never stop the run
+                if not isinstance(exc, (NavigationError, ScrapeError)):
+                    logger.exception("Ranks of project %s (%s): unexpected error", pid, project.name)
+                logger.warning("Ranks of project %s (%s) not read: %s", pid, project.name, exc)
+                self.summary.rank_failures.append(f"{pid} {project.name}: {type(exc).__name__}: {exc}")
+                continue
+            for asin in data.failed_asins:
+                self.summary.rank_failures.append(f"{pid} ASIN {asin}")
+            if getattr(data, "bsr_missing", False):
+                self.summary.rank_failures.append(f"{pid} {project.name}: BSR not read")
+            rank_rows = [
+                {
+                    "project_id": pid,
+                    "asin": r.asin,
+                    "rank_date": r.day,
+                    "keyword": r.keyword,
+                    "ranked_asin": r.ranked_asin,
+                    "marketplace": r.marketplace,
+                    "project_name": r.project_name,
+                    "organic_rank": r.organic_rank,
+                    "sponsored_rank": r.sponsored_rank,
+                    "amazon_choice": "Yes" if r.amazon_choice else "No",
+                    "scraped_at": scraped_at,
+                }
+                for r in data.ranks
+            ]
+            bsr_rows = [
+                {"project_id": pid, "asin": a, "rank_date": d, "bsr": b,
+                 "category": c, "scraped_at": scraped_at}
+                for a, d, b, c in data.bsr
+            ]
+            read_asins = [a for a in asins if a not in data.failed_asins]
+            if saving:
+                try:
+                    self._retry(
+                        f"Saving ranks of project {pid}",
+                        lambda: repository.replace_ranks(
+                            pid, data.start, data.end, rank_rows, bsr_rows, asins=read_asins
+                        ),
+                    )
+                except DatabaseError as exc:
+                    logger.warning("Ranks of project %s not saved: %s", pid, exc)
+                    self.summary.rank_failures.append(f"{pid} {project.name}: not saved: {exc}")
+                    continue
+                if progress is not None and not data.failed_asins:
+                    progress.ranks_saved(pid)
+            self.summary.rank_rows += len(rank_rows)
+            self.summary.bsr_rows += len(bsr_rows)
+            self.summary.rank_projects += 1
+            logger.info(
+                "    ranks %s %s..%s (%d days): %s ranks, %s BSR%s",
+                pid, data.start, data.end, days, f"{len(rank_rows):,}", f"{len(bsr_rows):,}",
+                "" if saving else " (not saved)",
+            )
+
+    @staticmethod
+    def _fresh_browser(site: DataRovaSite) -> None:
+        """Restart the browser between projects; a failed restart is logged only."""
+        restart = getattr(site, "restart_browser", None)
+        if restart is None:
+            return
+        try:
+            restart()
+        except Exception as exc:  # noqa: BLE001 - the next page load reports it
+            logger.warning("Browser restart failed: %s", exc)
+
+    def _restarting(self, site: DataRovaSite, operation: Callable[[], T]) -> Callable[[], T]:
+        """``operation``, restarting the browser after a failure so the retry
+        does not run in a frozen browser."""
+
+        def attempt() -> T:
+            try:
+                return operation()
+            except Exception:
+                self._fresh_browser(site)
+                raise
+
+        return attempt
 
     @staticmethod
     def _log_project(

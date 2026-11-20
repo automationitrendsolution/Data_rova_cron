@@ -7,7 +7,10 @@ from typing import Any
 
 import pytest
 
+from datetime import date, timedelta
+
 from app.asins_page import AsinRow, MarketplaceTable
+from app.ranks_page import RankData, RankRow
 from app.config import Settings
 from app.database import DataRovaRepository
 from app.exceptions import EmptyDataError, ScrapeError
@@ -36,12 +39,30 @@ class FakeSite:
         self.pages_read: list[int] = []
         self.slow_until: dict[int, int] = {}
         self.slow_mode = False
+        self.rank_calls: list[tuple[int, int]] = []
+        self.rank_broken: set[int] = set()
 
     def sign_in(self) -> None:
         pass
 
     def use_slow_mode(self) -> None:
         self.slow_mode = True
+
+    def read_ranks(self, project_id: int, asins: list[str], days: int) -> RankData:
+        self.rank_calls.append((project_id, days))
+        if project_id in self.rank_broken:
+            raise ScrapeError("ranks table did not appear", transient=False)
+        end = date(2026, 11, 18)
+        start = end - timedelta(days=days - 1)
+        data = RankData(project_id, start, end)
+        for asin in asins:
+            for i in range(days):
+                data.ranks.append(
+                    RankRow(asin, f"kw {project_id}", end - timedelta(days=i), asin, i + 1, None,
+                            i == 0, "US", f"Project {project_id}")
+                )
+                data.bsr.append((asin, end - timedelta(days=i), 1000 + i, "Automotive"))
+        return data
 
     def read_projects(self) -> list[ProjectCard]:
         return self.projects
@@ -175,3 +196,121 @@ def test_a_project_that_will_not_load_is_tried_again_at_the_end(
     assert site.slow_mode is True
     assert summary.rows == 3
     assert summary.write_result is not None and summary.write_result.inserted == 3
+
+
+
+def test_ranks_are_read_for_90_days_first_then_7(
+    settings: Settings, repository: DataRovaRepository
+) -> None:
+    site = two_projects()
+    first = make_pipeline(settings, repository, site).run()
+
+    # Project 1 (US) and project 2's UK marketplace (id 1002) are new: 90 days each.
+    assert sorted(site.rank_calls) == [(1, 90), (1002, 90)]
+    assert first.rank_projects == 2
+    assert first.rank_rows == 3 * 90  # 2 ASINs of project 1 + 1 of 1002, one keyword each
+    assert first.bsr_rows == 3 * 90
+
+    site.rank_calls.clear()
+    make_pipeline(settings, repository, site).run()
+    assert sorted(site.rank_calls) == [(1, 7), (1002, 7)]
+
+
+def test_rerun_replaces_the_window_without_duplicates(
+    settings: Settings, repository: DataRovaRepository
+) -> None:
+    from sqlalchemy import func, select
+
+    make_pipeline(settings, repository, two_projects()).run()
+    make_pipeline(settings, repository, two_projects()).run()
+
+    with repository.engine.connect() as c:
+        ranks = c.execute(select(func.count()).select_from(repository._ranks_table)).scalar_one()
+        bsr = c.execute(select(func.count()).select_from(repository._bsr_table)).scalar_one()
+    assert ranks == 3 * 90 and bsr == 3 * 90
+
+
+def test_a_ranks_failure_does_not_fail_the_run(
+    settings: Settings, repository: DataRovaRepository
+) -> None:
+    site = two_projects()
+    site.rank_broken = {1}
+
+    summary = make_pipeline(settings, repository, site).run()
+
+    assert summary.succeeded
+    assert summary.write_result is not None and summary.write_result.inserted == 3
+    assert summary.rank_projects == 1
+    assert any(gap.startswith("1 ") for gap in summary.rank_failures)
+
+
+def test_rank_days_option_forces_the_window(
+    settings: Settings, repository: DataRovaRepository
+) -> None:
+    site = two_projects()
+    make_pipeline(settings, repository, site, rank_days=3).run()
+    assert sorted(site.rank_calls) == [(1, 3), (1002, 3)]
+
+
+def test_an_unexpected_ranks_error_does_not_fail_the_run(
+    settings: Settings, repository: DataRovaRepository
+) -> None:
+    site = two_projects()
+
+    def boom(project_id: int, asins: list[str], days: int) -> RankData:
+        raise ValueError("time data 'Sept 2026' does not match format '%b %Y'")
+
+    site.read_ranks = boom  # type: ignore[method-assign]
+    summary = make_pipeline(settings, repository, site).run()
+
+    assert summary.succeeded
+    assert summary.write_result is not None and summary.write_result.inserted == 3
+    assert len(summary.rank_failures) == 2
+
+
+def test_a_stopped_run_continues_where_it_stopped(
+    settings: Settings, repository: DataRovaRepository
+) -> None:
+    site = two_projects()
+    site.broken = 2  # the run "stops" at project 2
+    with pytest.raises(ScrapeError):
+        make_pipeline(settings, repository, site).run()
+    assert settings.progress_file.is_file()
+    assert site.rank_calls == [(1, 90)]  # project 1's ranks were saved before the stop
+
+    site.broken = None
+    site.pages_read.clear()
+    site.rank_calls.clear()
+    summary = make_pipeline(settings, repository, site).run()
+
+    assert site.pages_read == [2]  # project 1 was not read again
+    assert site.rank_calls == [(1002, 90)]  # nor were its ranks
+    assert summary.write_result is not None and summary.write_result.inserted == 3
+    assert not settings.progress_file.exists()  # completed: nothing left to resume
+
+
+def test_fresh_ignores_a_stopped_run(settings: Settings, repository: DataRovaRepository) -> None:
+    site = two_projects()
+    site.broken = 2
+    with pytest.raises(ScrapeError):
+        make_pipeline(settings, repository, site).run()
+
+    site.broken = None
+    site.pages_read.clear()
+    make_pipeline(settings, repository, site, fresh=True).run()
+    assert site.pages_read == [1, 2]
+
+
+def test_watchdog_kills_a_frozen_browser(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    import time as _time
+
+    from app import watchdog
+
+    killed: list = []
+    monkeypatch.setattr(watchdog, "kill_browser", lambda session_dir: killed.append(session_dir) or 1)
+    dog = watchdog.Watchdog(tmp_path, limit_minutes=0)
+    dog.limit_seconds = 0.05
+    monkeypatch.setattr(dog._stop, "wait", lambda timeout: (_time.sleep(0.1), len(killed) >= 1)[1])
+    with dog:
+        _time.sleep(0.5)
+    assert killed == [tmp_path]

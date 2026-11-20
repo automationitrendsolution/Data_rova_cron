@@ -151,3 +151,129 @@ class TestKeywordTable:
         assert keywords_url("https://app.datarova.com/projects/70942/asins") == (
             "https://app.datarova.com/projects/70942/keywords"
         )
+
+
+
+class TestRanks:
+    def test_day_columns_follow_the_range_end(self) -> None:
+        from datetime import date
+
+        from app.ranks_page import day_columns
+
+        headers = ["Keyword (39)", "KW Sales L4W", "18\nNov", "17 Nov", "16 Nov", "", ""]
+        assert day_columns(headers, date(2026, 11, 18)) == {
+            2: date(2026, 11, 18), 3: date(2026, 11, 17), 4: date(2026, 11, 16),
+        }
+
+    def test_day_columns_across_a_year_end(self) -> None:
+        from datetime import date
+
+        from app.ranks_page import day_columns
+
+        assert day_columns(["02 Jan", "01 Jan", "31 Dec"], date(2027, 1, 2)) == {
+            0: date(2027, 1, 2), 1: date(2027, 1, 1), 2: date(2026, 12, 31),
+        }
+
+    def test_a_misread_day_is_caught(self) -> None:
+        from datetime import date
+
+        from app.ranks_page import day_columns
+
+        with pytest.raises(ScrapeError):
+            day_columns(["18 Nov", "10 Nov"], date(2026, 11, 18))
+
+    @pytest.mark.parametrize("shown, expected", [("3", 3), ("-", None), ("", None), ("38.5K", 38500), ("1,740", 1740)])
+    def test_parse_rank(self, shown, expected) -> None:
+        from app.ranks_page import parse_rank
+
+        assert parse_rank(shown) == expected
+
+
+
+class TestDailyRanksExport:
+    def test_parses_the_export(self, tmp_path) -> None:
+        from datetime import date
+
+        from app.ranks_page import parse_daily_ranks_csv
+
+        path = tmp_path / "export.csv"
+        path.write_text(
+            "\ufeffMarketplace,Project Name,Keyword,Date,Ranked ASIN,Organic Rank,Sponsored Rank,Amazon Choice Badge\n"
+            "US,Snow cover HSV,automotive windshield snow covers,2026-10-21,B07K6YKZBK,3,13,No\n"
+            "US,Snow cover HSV,automotive windshield snow covers,2026-10-22,B0CH8HPFD2,0,7,Yes\n"
+            "US,Snow cover HSV,car shield,2026-10-22,B07K6YKZBK,0,0,No\n",
+            encoding="utf-8",
+        )
+
+        rows = parse_daily_ranks_csv(path, "B07K6YKZBK")
+
+        assert len(rows) == 2  # the row with no rank and no badge is dropped
+        first, second = rows
+        assert (first.keyword, first.day, first.organic_rank, first.sponsored_rank, first.amazon_choice) == (
+            "automotive windshield snow covers", date(2026, 10, 21), 3, 13, False
+        )
+        assert (second.ranked_asin, second.organic_rank, second.sponsored_rank, second.amazon_choice) == (
+            "B0CH8HPFD2", None, 7, True
+        )
+        assert first.asin == "B07K6YKZBK" and first.marketplace == "US" and first.project_name == "Snow cover HSV"
+
+
+class TestDownloadReport:
+    def test_matches_only_our_request(self) -> None:
+        from datetime import datetime
+
+        from app.download_report import ExportRequest, matches, parse_row
+
+        row = parse_row(0, [
+            "Project - Ranks by ASIN - Daily\nProject-Ranks-by-ASIN-Daily-Snow-cover-HSV-B07K6YKZBK-261119-084551.csv",
+            "", "B07K6YKZBK", "Oct 21 - Nov 19, 2026", "Thu, Nov 19, 2026 2:15 PM", "Ready", "",
+        ])
+        assert row is not None and row.status == "Ready"
+        ours = ExportRequest("Project - Ranks by ASIN - Daily", "B07K6YKZBK", "Oct 21 - Nov 19, 2026",
+                             datetime(2026, 11, 19, 14, 15, 40))
+        assert matches(row, ours)
+        older = ExportRequest(ours.report_type, ours.key, ours.date_range, datetime(2026, 11, 19, 14, 30))
+        assert not matches(row, older)  # requested before our click
+        other = ExportRequest(ours.report_type, "B0DBPF27GS", ours.date_range, ours.requested_at)
+        assert not matches(row, other)
+
+
+class TestRangeLabel:
+    @pytest.mark.parametrize(
+        "label, start, end",
+        [
+            ("Aug 22 - Nov 19, 2026", (2026, 8, 22), (2026, 11, 19)),
+            ("Sept 1 - Nov 29, 2026", (2026, 9, 1), (2026, 11, 29)),
+            ("Dec 1, 2025 - Jan 5, 2026", (2025, 12, 1), (2026, 1, 5)),
+            ("Nov 3 - Jan 31, 2027", (2026, 11, 3), (2027, 1, 31)),
+            ("L90D  Aug 22 - Nov 19, 2026", (2026, 8, 22), (2026, 11, 19)),
+        ],
+    )
+    def test_parses(self, label, start, end) -> None:
+        from datetime import date
+
+        from app.ranks_page import parse_range_label
+
+        assert parse_range_label(label) == (date(*start), date(*end))
+
+    def test_not_a_range(self) -> None:
+        from app.ranks_page import parse_range_label
+
+        assert parse_range_label("Daily Weekly Monthly") is None
+
+
+class TestAsinsUrl:
+    @pytest.mark.parametrize(
+        "url, expected",
+        [
+            ("https://app.datarova.com/projects/69261/ranks/bsr", "https://app.datarova.com/projects/69261/asins"),
+            ("https://app.datarova.com/projects/69261/ranks/by-asin", "https://app.datarova.com/projects/69261/asins"),
+            ("https://app.datarova.com/projects/37440/asins/B0C36YRQWN", "https://app.datarova.com/projects/37440/asins/B0C36YRQWN"),
+            ("https://app.datarova.com/projects/37440/keywords/B0C36YRQWN", "https://app.datarova.com/projects/37440/asins/B0C36YRQWN"),
+            ("https://app.datarova.com/projects/37440/ranks/B0C36YRQWN?x=1", "https://app.datarova.com/projects/37440/asins/B0C36YRQWN"),
+        ],
+    )
+    def test_always_the_asins_tab(self, url, expected) -> None:
+        from app.asins_page import asins_url_of
+
+        assert asins_url_of("https://app.datarova.com", url, int(url.split("/")[4])) == expected

@@ -32,7 +32,13 @@ import sys
 from pathlib import Path
 
 from app import __version__
-from app.config import DEFAULT_KEYWORDS_TABLE, DEFAULT_TABLE, load_settings
+from app.config import (
+    DEFAULT_BSR_TABLE,
+    DEFAULT_KEYWORDS_TABLE,
+    DEFAULT_RANKS_TABLE,
+    DEFAULT_TABLE,
+    load_settings,
+)
 from app.exceptions import ConfigurationError, DataRovaError
 from app.logging_config import configure_logging, get_logger
 from app.main import DataRovaPipeline, RunMode, RunOptions
@@ -72,6 +78,19 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         metavar="ID",
         help="Only this project id (repeatable). For testing: never writes to MySQL.",
+    )
+
+    parser.add_argument(
+        "--rank-days",
+        type=int,
+        metavar="N",
+        help="Read N days of ranks for every project (default: 90 the first time, then 7).",
+    )
+
+    parser.add_argument(
+        "--fresh",
+        action="store_true",
+        help="Start from the beginning even if a previous run stopped part-way.",
     )
 
     modes = parser.add_mutually_exclusive_group()
@@ -123,12 +142,18 @@ def main(argv: list[str] | None = None) -> int:
         from app.schema import create_table_sql
 
         load_dotenv(args.env_file or PROJECT_ROOT / ".env")
+        from app.schema import ranks_report_view_sql
+
         print(
             create_table_sql(
                 os.environ.get("DB_TABLE") or DEFAULT_TABLE,
                 os.environ.get("DB_KEYWORDS_TABLE") or DEFAULT_KEYWORDS_TABLE,
+                os.environ.get("DB_RANKS_TABLE") or DEFAULT_RANKS_TABLE,
+                os.environ.get("DB_BSR_TABLE") or DEFAULT_BSR_TABLE,
             )
         )
+        print()
+        print(ranks_report_view_sql(os.environ.get("DB_RANKS_TABLE") or DEFAULT_RANKS_TABLE) + ";")
         return 0
 
     try:
@@ -152,6 +177,8 @@ def main(argv: list[str] | None = None) -> int:
         use_lock=not args.no_lock,
         echo_sql=args.echo_sql,
         project_ids=set(args.project) if args.project else None,
+        rank_days=args.rank_days,
+        fresh=args.fresh,
     )
 
     pipeline = DataRovaPipeline(settings, options)
