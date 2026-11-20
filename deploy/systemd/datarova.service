@@ -1,8 +1,15 @@
 # One DataRova run. Started by datarova.timer.
+#
+# A daily run takes 1-2 h (ASINs, keywords, 7 days of ranks + BSR); the very
+# first run (90 days of ranks) takes many hours -- run that one by hand, see
+# README "Deploying on a server".
 [Unit]
-Description=DataRova - project/ASIN snapshot into MySQL
+Description=DataRova - projects, ASINs, keywords, ranks, BSR into MySQL
 After=network-online.target
 Wants=network-online.target
+# At most 4 starts (1 + 3 retries) within 12 h.
+StartLimitIntervalSec=12h
+StartLimitBurst=4
 
 [Service]
 Type=oneshot
@@ -10,8 +17,11 @@ User=datarova
 Group=datarova
 WorkingDirectory=/opt/datarova
 ExecStart=/usr/local/bin/uv run --no-sync python run.py --quiet
-# ~5 minutes normally; leave room for retries and a lock wait.
-TimeoutStartSec=3600
+TimeoutStartSec=8h
+# A failed run is started again after 15 min; it continues where it stopped
+# (data/progress/current.json) instead of starting over.
+Restart=on-failure
+RestartSec=15min
 Nice=10
 
 # Hardening: DataRova only writes inside its own directory.

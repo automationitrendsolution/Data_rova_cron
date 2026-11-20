@@ -1,12 +1,13 @@
-# DataRova snapshot once a day at 10:00 India time.
+# DataRova run once a day at 14:30 India time -- after DataRova publishes the
+# previous day's ranks (about 13:40 IST).
 # The timezone is part of the schedule, so the server's own zone is irrelevant
 # (needs systemd 235+).
 [Unit]
-Description=DataRova: daily project/ASIN snapshot at 10:00 IST
+Description=DataRova: daily run at 14:30 IST
 
 [Timer]
-OnCalendar=*-*-* 10:00:00 Asia/Kolkata
-# If the server was down at 10:00, run as soon as it is back.
+OnCalendar=*-*-* 14:30:00 Asia/Kolkata
+# If the server was down at 14:30, run as soon as it is back.
 Persistent=true
 RandomizedDelaySec=120
 Unit=datarova.service

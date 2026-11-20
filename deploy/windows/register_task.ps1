@@ -8,7 +8,8 @@
 # tick "Run whether user is logged on or not". Times are this PC's local time.
 
 param(
-    [string]$At = "10:00",
+    # After DataRova publishes the previous day's ranks (about 13:40 IST).
+    [string]$At = "14:30",
     [string]$TaskName = "DataRova daily snapshot"
 )
 
@@ -21,13 +22,21 @@ $action = New-ScheduledTaskAction `
     -Argument "run --no-sync python run.py --quiet" `
     -WorkingDirectory $project
 $trigger = New-ScheduledTaskTrigger -Daily -At $At
+# A daily run takes 1-2 h (ASINs, keywords, 7 days of ranks): allow 8 h.
+# If it fails, Windows tries again (up to 3 times, 15 min apart); a retry on
+# the same day continues the stopped run instead of starting over.
 $settings = New-ScheduledTaskSettingsSet `
     -StartWhenAvailable `
-    -ExecutionTimeLimit (New-TimeSpan -Hours 1) `
-    -MultipleInstances IgnoreNew
+    -ExecutionTimeLimit (New-TimeSpan -Hours 8) `
+    -RestartCount 3 `
+    -RestartInterval (New-TimeSpan -Minutes 15) `
+    -MultipleInstances IgnoreNew `
+    -DontStopIfGoingOnBatteries `
+    -AllowStartIfOnBatteries `
+    -WakeToRun
 
 Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger `
-    -Settings $settings -Description "DataRova projects + ASINs -> MySQL datarova_all_data" -Force | Out-Null
+    -Settings $settings -Description "DataRova projects, ASINs, keywords, ranks, BSR -> MySQL powerbidb" -Force | Out-Null
 
 Write-Host "Registered '$TaskName': daily at $At, in $project"
 Write-Host "Run it now with:  Start-ScheduledTask -TaskName '$TaskName'"

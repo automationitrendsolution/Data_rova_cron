@@ -314,3 +314,21 @@ def test_watchdog_kills_a_frozen_browser(monkeypatch: pytest.MonkeyPatch, tmp_pa
     with dog:
         _time.sleep(0.5)
     assert killed == [tmp_path]
+
+
+def test_an_old_days_stopped_run_is_not_continued(tmp_path) -> None:
+    from datetime import date, datetime
+
+    from app.progress import Progress
+
+    path = tmp_path / "current.json"
+    monday = Progress.start(path, date(2026, 11, 23), datetime(2026, 11, 23, 14), None, fresh=False)
+    monday.project_read(1, [])
+    tuesday = Progress.start(path, date(2026, 11, 24), datetime(2026, 11, 24, 14), None, fresh=False)
+
+    assert not tuesday.resumed
+    assert tuesday.scrape_date == date(2026, 11, 24)
+    assert tuesday.projects == {}
+
+    again = Progress.start(path, date(2026, 11, 24), datetime(2026, 11, 24, 15), None, fresh=False)
+    assert again.resumed  # the same day's run is still continued

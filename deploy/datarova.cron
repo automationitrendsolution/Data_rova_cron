@@ -11,8 +11,8 @@ SHELL=/bin/bash
 PATH=/usr/local/bin:/usr/bin:/bin
 HOME=/home/datarova
 
-# --- Server timezone is UTC: 10:00 IST == 04:30 UTC ---------------------------
-30 4 * * * datarova cd /opt/datarova && /usr/local/bin/uv run --no-sync python run.py --quiet >> logs/cron.log 2>&1
+# --- Server timezone is UTC: 14:30 IST == 09:00 UTC ----------------------------
+0 9 * * *  datarova cd /opt/datarova && /usr/local/bin/uv run --no-sync python run.py --quiet >> logs/cron.log 2>&1
 
 # --- Server timezone is Asia/Kolkata -------------------------------------------
-# 0 10 * * * datarova cd /opt/datarova && /usr/local/bin/uv run --no-sync python run.py --quiet >> logs/cron.log 2>&1
+# 30 14 * * * datarova cd /opt/datarova && /usr/local/bin/uv run --no-sync python run.py --quiet >> logs/cron.log 2>&1

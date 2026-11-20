@@ -71,6 +71,15 @@ class Progress:
         if path.is_file() and not fresh:
             try:
                 raw = json.loads(path.read_text(encoding="utf-8"))
+                stopped_day = date.fromisoformat(raw["scrape_date"])
+                if stopped_day != scrape_date:
+                    # A scheduled run never finishes an older day's run: that
+                    # would file today's snapshot under the old day.  Ranks lose
+                    # nothing -- every run re-reads the last days anyway.
+                    logger.info(
+                        "A run of %s stopped part-way; starting today's run fresh instead", stopped_day
+                    )
+                    raise ValueError("stale progress")
                 progress = cls(
                     path,
                     date.fromisoformat(raw["scrape_date"]),
@@ -90,7 +99,8 @@ class Progress:
                 )
                 return progress
             except (OSError, ValueError, KeyError, TypeError) as exc:
-                logger.warning("Progress file %s unreadable (%s); starting from the beginning", path, exc)
+                if str(exc) != "stale progress":
+                    logger.warning("Progress file %s unreadable (%s); starting from the beginning", path, exc)
         if path.is_file() and fresh:
             logger.info("--fresh: ignoring the stopped run in %s", path)
         progress = cls(path, scrape_date, scraped_at, rank_days)
