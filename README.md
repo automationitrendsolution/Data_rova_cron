@@ -1,7 +1,7 @@
 # DataRova_cron
 
 **Copies our DataRova data into the `powerbidb` MySQL database every day, so
-Power BI always has the latest numbers and the full day-by-day history.**
+Power BI always has the latest numbers and the day-by-day rank history.**
 
 Nobody has to log in to DataRova and export anything by hand any more.
 
@@ -25,15 +25,21 @@ Nobody has to log in to DataRova and export anything by hand any more.
 
 ## 1. What you get
 
-Four tables (and one ready-made view) in the **`powerbidb`** database:
+Four tables (and three ready-made views) in the **`powerbidb`** database:
 
 | Table | What is in it | One row per | History |
 |---|---|---|---|
-| **`datarova_all_data`** | Every product (ASIN) in every project: price, reviews, rating, BSR, visibility, category… | day × project × ASIN | a new snapshot every day |
-| **`datarova_keywords`** | Every keyword in every project: clicks, sales, conversion, trend, organic/sponsored rank, top ASIN… | day × project × keyword | a new snapshot every day |
+| **`datarova_all_data`** | Every product (ASIN) in every project: price, reviews, rating, BSR, visibility, category… | project × ASIN | **latest run only** (each run replaces it) |
+| **`datarova_keywords`** | Every keyword in every project: clicks, sales, conversion, trend, organic/sponsored rank, top ASIN… | project × keyword | **latest run only** (each run replaces it) |
 | **`datarova_ranks`** | Daily rank of every product for every keyword: **organic rank, sponsored rank, Amazon's Choice (Yes/No)** | day × project × ASIN × keyword | 90 days back + every new day |
 | **`datarova_bsr`** | Daily Best Seller Rank of every product | day × project × ASIN | 90 days back + every new day |
 | **`datarova_ranks_report`** *(view)* | Same as `datarova_ranks`, with the **exact column names of DataRova's "Daily Ranks" export**: Marketplace · Project · Keyword · Date · Ranked ASIN · Organic Rank · Sponsored Rank · Amazon Choice Badge | — | — |
+| **`datarova_products`** *(view)* | `datarova_all_data` **without duplicates**: one row per product, with `projects` / `project_count` listing every project it is in | day × marketplace × ASIN | as the table |
+| **`datarova_ranks_unique`** *(view)* | `datarova_ranks` **without duplicates**: one rank per keyword and product, with `projects` listing the projects | day × marketplace × keyword × ranked ASIN | as the table |
+
+> **Why the duplicates?** DataRova lets one ASIN sit in many projects (B01KIFISX2 is in 13).
+> The tables keep one row *per project*, exactly like DataRova. For **one card / one line per
+> product** (apps, Power BI product pages), read the two views above instead of the tables.
 
 Size today: 68 projects, ~725 ASINs, ~44,000 keywords, ~26 million rank rows.
 
@@ -238,6 +244,7 @@ Rarely needed (defaults are fine):
 | Setting | Default | Meaning |
 |---|---|---|
 | `SCRAPE_KEYWORDS` / `SCRAPE_RANKS` | `true` | turn keywords / ranks off |
+| `KEEP_HISTORY` | `false` | `false`: `datarova_all_data` and `datarova_keywords` hold only the latest run. `true`: keep one snapshot per day. Ranks and BSR always keep their history |
 | `RANKS_INITIAL_DAYS` / `RANKS_DAYS` | `90` / `7` | days of ranks for a new project / each daily run |
 | `BROWSER_TIMEOUT_MS`, `TABLE_TIMEOUT_MS` | `300000` (5 min) | how long to wait for a slow DataRova page |
 | `EXPORT_WAIT_SECONDS` | `3600` | how long DataRova may take to build rank exports |

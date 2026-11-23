@@ -142,7 +142,7 @@ def main(argv: list[str] | None = None) -> int:
         from app.schema import create_table_sql
 
         load_dotenv(args.env_file or PROJECT_ROOT / ".env")
-        from app.schema import ranks_report_view_sql
+        from app.schema import products_view_sql, ranks_report_view_sql, ranks_unique_view_sql
 
         print(
             create_table_sql(
@@ -153,7 +153,14 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
         print()
-        print(ranks_report_view_sql(os.environ.get("DB_RANKS_TABLE") or DEFAULT_RANKS_TABLE) + ";")
+        ranks = os.environ.get("DB_RANKS_TABLE") or DEFAULT_RANKS_TABLE
+        for view in (
+            products_view_sql(os.environ.get("DB_TABLE") or DEFAULT_TABLE),
+            ranks_report_view_sql(ranks),
+            ranks_unique_view_sql(ranks),
+        ):
+            print(view + ";")
+            print()
         return 0
 
     try:

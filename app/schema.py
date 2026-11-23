@@ -267,3 +267,62 @@ def ranks_report_view_sql(ranks_table: str, view: str = RANKS_REPORT_VIEW) -> st
         f"    amazon_choice   AS `Amazon Choice Badge`\n"
         f"FROM `{ranks_table}`"
     )
+
+
+#: One row per day x marketplace x ASIN.  DataRova tracks the same ASIN in
+#: several projects, so ``datarova_all_data`` has one row per *project*; this
+#: view merges them and lists the projects instead.
+PRODUCTS_VIEW = "datarova_products"
+
+#: One row per day x marketplace x keyword x ranked ASIN.  ``datarova_ranks``
+#: repeats a rank once per project that tracks the ASIN; this view merges them.
+RANKS_UNIQUE_VIEW = "datarova_ranks_unique"
+
+
+def products_view_sql(table: str, view: str = PRODUCTS_VIEW) -> str:
+    """``CREATE OR REPLACE VIEW``: ``table`` without the per-project repeats."""
+    return (
+        f"CREATE OR REPLACE VIEW `{view}` AS\n"
+        f"SELECT\n"
+        f"    scrape_date,\n"
+        f"    project_marketplace                AS marketplace,\n"
+        f"    MAX(project_domain)                AS domain,\n"
+        f"    asin,\n"
+        f"    MAX(title)                         AS title,\n"
+        f"    MAX(currency)                      AS currency,\n"
+        f"    MAX(price)                         AS price,\n"
+        f"    MAX(reviews)                       AS reviews,\n"
+        f"    MAX(rating)                        AS rating,\n"
+        f"    MAX(visibility)                    AS visibility,\n"
+        f"    MAX(keywords_in_top10)             AS keywords_in_top10,\n"
+        f"    MAX(choice_badges)                 AS choice_badges,\n"
+        f"    MIN(latest_bsr)                    AS latest_bsr,\n"
+        f"    MAX(top_level_category)            AS top_level_category,\n"
+        f"    MAX(image_url)                     AS image_url,\n"
+        f"    MAX(is_primary_asin)               AS is_primary_in_any_project,\n"
+        f"    COUNT(DISTINCT project_id)         AS project_count,\n"
+        f"    GROUP_CONCAT(DISTINCT project_name ORDER BY project_name SEPARATOR ' | ') AS projects,\n"
+        f"    GROUP_CONCAT(DISTINCT project_id ORDER BY project_id SEPARATOR ',')       AS project_ids,\n"
+        f"    MAX(scraped_at)                    AS scraped_at\n"
+        f"FROM `{table}`\n"
+        f"GROUP BY scrape_date, project_marketplace, asin"
+    )
+
+
+def ranks_unique_view_sql(ranks_table: str, view: str = RANKS_UNIQUE_VIEW) -> str:
+    """``CREATE OR REPLACE VIEW``: ``ranks_table`` without the per-project repeats."""
+    return (
+        f"CREATE OR REPLACE VIEW `{view}` AS\n"
+        f"SELECT\n"
+        f"    rank_date,\n"
+        f"    marketplace,\n"
+        f"    keyword,\n"
+        f"    ranked_asin,\n"
+        f"    MIN(organic_rank)                  AS organic_rank,\n"
+        f"    MIN(sponsored_rank)                AS sponsored_rank,\n"
+        f"    MAX(amazon_choice)                 AS amazon_choice,\n"
+        f"    COUNT(DISTINCT project_id)         AS project_count,\n"
+        f"    GROUP_CONCAT(DISTINCT project_name ORDER BY project_name SEPARATOR ' | ') AS projects\n"
+        f"FROM `{ranks_table}`\n"
+        f"GROUP BY rank_date, marketplace, keyword, ranked_asin"
+    )

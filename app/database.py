@@ -39,7 +39,9 @@ from .schema import (
     build_keywords_table,
     build_ranks_table,
     build_table,
+    products_view_sql,
     ranks_report_view_sql,
+    ranks_unique_view_sql,
 )
 
 logger = get_logger("database")
@@ -122,8 +124,10 @@ class DataRovaRepository:
         keywords_table: str | None = None,
         ranks_table: str | None = None,
         bsr_table: str | None = None,
+        keep_history: bool = True,
     ) -> None:
         self.engine = engine
+        self.keep_history = keep_history
         self.table_name = table
         self.keywords_table_name = keywords_table
         self.ranks_table_name = ranks_table
@@ -171,14 +175,30 @@ class DataRovaRepository:
                 raise DatabaseError(f"Could not create table {name!r}: {_short(exc)}") from exc
             logger.info("Created table %s", name)
             created = True
-        if self.ranks_table_name and self.engine.dialect.name == "mysql":
-            # The export-shaped view over the ranks table (safe to re-create).
+        self.create_views()
+        return created
+
+    def view_statements(self) -> list[str]:
+        """``CREATE OR REPLACE VIEW`` for every view over this repository's tables."""
+        statements = [products_view_sql(self.table_name)]
+        if self.ranks_table_name:
+            # The export-shaped view, and the one without per-project repeats.
+            statements += [
+                ranks_report_view_sql(self.ranks_table_name),
+                ranks_unique_view_sql(self.ranks_table_name),
+            ]
+        return statements
+
+    def create_views(self) -> None:
+        """(Re)create the views (MySQL only; safe to run again, stores no data)."""
+        if self.engine.dialect.name != "mysql":
+            return
+        for statement in self.view_statements():
             try:
                 with self.engine.begin() as connection:
-                    connection.execute(text(ranks_report_view_sql(self.ranks_table_name)))
+                    connection.execute(text(statement))
             except SQLAlchemyError as exc:
-                raise DatabaseError(f"Could not create the ranks report view: {_short(exc)}") from exc
-        return created
+                raise DatabaseError(f"Could not create a view: {_short(exc)}") from exc
 
     def reflect(self) -> None:
         """Load the live table definition.
@@ -277,6 +297,15 @@ class DataRovaRepository:
 
     # -- writes --------------------------------------------------------------
 
+    def _old_rows(self, table: Table, days: list):
+        """The rows a new snapshot replaces: its own days, or every row."""
+        if self.keep_history:
+            return delete(table).where(table.c[DATE_COLUMN].in_(days))
+        return delete(table)
+
+    def _scope(self, labels: tuple[str, ...]) -> str:
+        return f"for {', '.join(labels)}" if self.keep_history else "(all days: KEEP_HISTORY=false)"
+
     def replace_snapshot(
         self,
         records: Sequence[dict[str, object]],
@@ -309,21 +338,17 @@ class DataRovaRepository:
         kw_deleted = kw_inserted = 0
         try:
             with self.transaction() as connection:
-                deleted = connection.execute(
-                    delete(table).where(table.c[DATE_COLUMN].in_(days))
-                ).rowcount
+                deleted = connection.execute(self._old_rows(table, days)).rowcount
                 logger.info(
-                    "Replacing %s old ASIN rows for %s", f"{max(deleted or 0, 0):,}", ", ".join(labels)
+                    "Replacing %s old ASIN rows %s", f"{max(deleted or 0, 0):,}", self._scope(labels)
                 )
                 inserted = _chunked_insert(connection, table, rows)
                 if kw_rows and kw_table is not None:
-                    kw_deleted = connection.execute(
-                        delete(kw_table).where(kw_table.c[DATE_COLUMN].in_(days))
-                    ).rowcount
+                    kw_deleted = connection.execute(self._old_rows(kw_table, days)).rowcount
                     logger.info(
-                        "Replacing %s old keyword rows for %s",
+                        "Replacing %s old keyword rows %s",
                         f"{max(kw_deleted or 0, 0):,}",
-                        ", ".join(labels),
+                        self._scope(labels),
                     )
                     kw_inserted = _chunked_insert(connection, kw_table, kw_rows)
         except SQLAlchemyError as exc:
@@ -455,6 +480,7 @@ def build_repository(settings: Settings, *, echo: bool = False) -> DataRovaRepos
         keywords_table=settings.keywords_table,
         ranks_table=settings.ranks_table if settings.scrape_ranks else None,
         bsr_table=settings.bsr_table if settings.scrape_ranks else None,
+        keep_history=settings.keep_history,
     )
     try:
         repository.check_connection()

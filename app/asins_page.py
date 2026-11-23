@@ -80,6 +80,16 @@ MARKETPLACES: dict[str, str] = {
     "amazon.com.au": "AU",
     "amazon.sg": "SG",
 }
+_DOMAINS: dict[str, str] = {code: domain for domain, code in MARKETPLACES.items()}
+
+
+def card_marketplace(card) -> tuple[str | None, str | None]:
+    """(code, domain) of a card that shows exactly one marketplace, else (None, None)."""
+    codes = [c.strip().upper() for c in getattr(card, "marketplaces", ()) if c and c.strip()]
+    if len(codes) != 1:
+        return None, None
+    code = "UK" if codes[0] == "GB" else codes[0]
+    return code, _DOMAINS.get(code)
 
 #: Header -> field.  Headers are compared lower-cased with spaces collapsed.
 HEADER_FIELDS: dict[str, str] = {
@@ -266,9 +276,11 @@ class AsinsPage:
 
         marketplaces, current_flag = self._read_marketplaces()
         if not marketplaces:
-            # No switcher: a single-marketplace project.
+            # No switcher (or it was slow to show): a single-marketplace
+            # project.  Its marketplace is the one printed on the card.
             rows = self._read_rows(card.project_id, total)
-            return [MarketplaceTable(current_id, None, None, total, card.keywords_count, rows,
+            code, domain = card_marketplace(card)
+            return [MarketplaceTable(current_id, code, domain, total, card.keywords_count, rows,
                                      page_url=self.page.url)]
 
         current = next((m for m in marketplaces if m.flag and m.flag == current_flag), None)

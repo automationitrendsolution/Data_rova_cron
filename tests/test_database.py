@@ -126,3 +126,41 @@ class TestKeywords:
         sql = create_table_sql(TABLE, "datarova_keywords")
         assert "CREATE TABLE datarova_keywords (" in sql
         assert "UNIQUE (scrape_date, project_id, keyword)" in sql
+
+
+class TestLatestOnly:
+    """KEEP_HISTORY=false: the ASIN and keyword tables hold only the latest run."""
+
+    def test_new_run_replaces_every_older_day(self, repository: DataRovaRepository) -> None:
+        repository.keep_history = False
+        repository.replace_snapshot(rows(DAY1), keyword_rows(DAY1, 5))
+        result = repository.replace_snapshot(rows(DAY2, ("B000000003",)), keyword_rows(DAY2, 2))
+
+        assert result.deleted == 2
+        assert result.keywords_deleted == 5
+        assert repository.count_for_date(DAY1) == 0
+        assert repository.count_for_date(DAY1, keywords=True) == 0
+        assert repository.count_for_date(DAY2) == 1
+        assert repository.count_for_date(DAY2, keywords=True) == 2
+
+    def test_failed_load_keeps_the_previous_run(self, repository: DataRovaRepository) -> None:
+        repository.keep_history = False
+        repository.replace_snapshot(rows(DAY1), keyword_rows(DAY1))
+        bad = keyword_rows(DAY2)
+        bad[1]["keyword"] = None
+
+        with pytest.raises(Exception):
+            repository.replace_snapshot(rows(DAY2), bad)
+
+        assert repository.count_for_date(DAY1) == 2
+        assert repository.count_for_date(DAY1, keywords=True) == 3
+
+    def test_is_the_default_setting(self, monkeypatch) -> None:
+        from app.config import load_settings
+
+        monkeypatch.delenv("KEEP_HISTORY", raising=False)
+        monkeypatch.setenv("DATAROVA_EMAIL", "x@example.com")
+        monkeypatch.setenv("DATAROVA_PASSWORD", "x")
+        assert load_settings(None).keep_history is False
+        monkeypatch.setenv("KEEP_HISTORY", "true")
+        assert load_settings(None).keep_history is True
