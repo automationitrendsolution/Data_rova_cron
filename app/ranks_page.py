@@ -162,7 +162,7 @@ def _rank_or_none(text: str | None) -> int | None:
 
 
 def parse_daily_ranks_csv(path: Path, asin: str) -> list[RankRow]:
-    """A Daily Ranks export -> RankRow.  Rows with no rank and no badge are dropped."""
+    """A Daily Ranks export -> RankRow (rows with no rank and no badge included)."""
     rows: list[RankRow] = []
     with path.open(encoding="utf-8-sig", newline="") as handle:
         for raw in csv.DictReader(handle):
@@ -176,8 +176,6 @@ def parse_daily_ranks_csv(path: Path, asin: str) -> list[RankRow]:
             organic = _rank_or_none(raw.get("Organic Rank"))
             sponsored = _rank_or_none(raw.get("Sponsored Rank"))
             badge = (raw.get("Amazon Choice Badge") or "").strip().lower() in ("yes", "true", "1")
-            if organic is None and sponsored is None and not badge:
-                continue
             ranked = (raw.get("Ranked ASIN") or "").strip().upper()
             rows.append(
                 RankRow(
@@ -193,6 +191,44 @@ def parse_daily_ranks_csv(path: Path, asin: str) -> list[RankRow]:
                 )
             )
     return rows
+
+
+def fill_empty_ranks(
+    ranks: list[RankRow],
+    asins: list[str],
+    keywords: list[str],
+    start: date,
+    end: date,
+    marketplace: str | None = None,
+    project_name: str | None = None,
+) -> list[RankRow]:
+    """Every ASIN x keyword x day of the window: the export's rows, plus an
+    empty row (no organic rank, no sponsored rank, no badge) for each
+    combination the export left out.  One row per (asin, keyword, day): a
+    row with a rank wins over an empty one."""
+    def has_rank(row: RankRow) -> bool:
+        return row.organic_rank is not None or row.sponsored_rank is not None or row.amazon_choice
+
+    best: dict[tuple[str, str, date], RankRow] = {}
+    for row in ranks:
+        key = (row.asin, row.keyword, row.day)
+        if key not in best or (has_rank(row) and not has_rank(best[key])):
+            best[key] = row
+    names = list(dict.fromkeys(" ".join(k.split()) for k in keywords if k and k.strip()))
+    marketplace = marketplace or next((r.marketplace for r in ranks if r.marketplace), None)
+    project_name = project_name or next((r.project_name for r in ranks if r.project_name), None)
+    day = start
+    while day <= end:
+        for asin in asins:
+            for keyword in names:
+                if (asin, keyword, day) not in best:
+                    best[(asin, keyword, day)] = RankRow(
+                        asin=asin, keyword=keyword, day=day, ranked_asin=None,
+                        organic_rank=None, sponsored_rank=None, amazon_choice=False,
+                        marketplace=marketplace, project_name=project_name,
+                    )
+        day += timedelta(days=1)
+    return list(best.values())
 
 
 class RanksPage:

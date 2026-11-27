@@ -41,7 +41,7 @@ from .exceptions import (
 from .logging_config import get_logger
 from .maintenance import cleanup_old_files
 from .keywords_page import KeywordsPage
-from .ranks_page import RankData, RanksPage
+from .ranks_page import RankData, RanksPage, fill_empty_ranks
 from .progress import Progress
 from .watchdog import Watchdog
 from .processor import build_keyword_rows, build_rows, check_card_total, check_not_empty
@@ -62,7 +62,11 @@ RANKS_STALE_AFTER_DAYS = 2
 
 def stale_ranks_message(ranks, start: date, end: date) -> str | None:
     """Why a project's ranks look stopped, or None when they are up to date."""
-    days = [r.day for r in ranks if r.day is not None]
+    days = [
+        r.day for r in ranks
+        if r.day is not None
+        and (r.organic_rank is not None or r.sponsored_rank is not None or r.amazon_choice)
+    ]
     if not days:
         return f"no ranks at all from {start} to {end} -- ask DataRova why"
     newest = max(days)
@@ -672,6 +676,20 @@ class DataRovaPipeline:
                 self.summary.rank_stale.append(f"{pid} {project.name} ({table.marketplace or '?'}): {stale}")
             if getattr(data, "bsr_missing", False):
                 self.summary.rank_failures.append(f"{pid} {project.name}: BSR not read")
+            ranks = data.ranks
+            if self.settings.save_empty_ranks:
+                ranks = fill_empty_ranks(
+                    ranks,
+                    [a for a in asins if a not in data.failed_asins],
+                    [k.keyword for k in table.keywords],
+                    data.start,
+                    data.end,
+                    table.marketplace,
+                    project.name,
+                )
+            else:
+                ranks = [r for r in ranks if r.organic_rank is not None
+                         or r.sponsored_rank is not None or r.amazon_choice]
             rank_rows = [
                 {
                     "project_id": pid,
@@ -686,7 +704,7 @@ class DataRovaPipeline:
                     "amazon_choice": "Yes" if r.amazon_choice else "No",
                     "scraped_at": scraped_at,
                 }
-                for r in data.ranks
+                for r in ranks
             ]
             bsr_rows = [
                 {"project_id": pid, "asin": a, "rank_date": d, "bsr": b,

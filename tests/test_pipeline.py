@@ -208,7 +208,9 @@ def test_ranks_are_read_for_90_days_first_then_7(
     # Project 1 (US) and project 2's UK marketplace (id 1002) are new: 90 days each.
     assert sorted(site.rank_calls) == [(1, 90), (1002, 90)]
     assert first.rank_projects == 2
-    assert first.rank_rows == 3 * 90  # 2 ASINs of project 1 + 1 of 1002, one keyword each
+    # 2 ASINs of project 1 + 1 of 1002 ranked every day, plus empty rows for
+    # the project keywords that did not rank (SAVE_EMPTY_RANKS).
+    assert first.rank_rows > 3 * 90
     assert first.bsr_rows == 3 * 90
 
     site.rank_calls.clear()
@@ -221,13 +223,23 @@ def test_rerun_replaces_the_window_without_duplicates(
 ) -> None:
     from sqlalchemy import func, select
 
-    make_pipeline(settings, repository, two_projects()).run()
-    make_pipeline(settings, repository, two_projects()).run()
+    def counts():
+        t = repository._ranks_table
+        with repository.engine.connect() as c:
+            total = c.execute(select(func.count()).select_from(t)).scalar_one()
+            ranked = c.execute(
+                select(func.count()).select_from(t).where(t.c.organic_rank.is_not(None))
+            ).scalar_one()
+            bsr = c.execute(select(func.count()).select_from(repository._bsr_table)).scalar_one()
+        return total, ranked, bsr
 
-    with repository.engine.connect() as c:
-        ranks = c.execute(select(func.count()).select_from(repository._ranks_table)).scalar_one()
-        bsr = c.execute(select(func.count()).select_from(repository._bsr_table)).scalar_one()
-    assert ranks == 3 * 90 and bsr == 3 * 90
+    make_pipeline(settings, repository, two_projects()).run()
+    first = counts()
+    make_pipeline(settings, repository, two_projects()).run()
+    total, ranked, bsr = counts()
+
+    assert (total, ranked, bsr) == first
+    assert ranked == 3 * 90 and bsr == 3 * 90
 
 
 def test_a_ranks_failure_does_not_fail_the_run(

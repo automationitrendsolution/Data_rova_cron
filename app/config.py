@@ -220,6 +220,9 @@ class Settings:
     keep_history: bool = True
     #: The same for datarova_keywords (~44k rows a day, so latest-only by default).
     keep_keyword_history: bool = False
+    #: True: datarova_ranks gets a row for every ASIN x keyword x day, with
+    #: empty ranks when nothing ranked.  False: only days with a rank/badge.
+    save_empty_ranks: bool = True
     ranks_table: str = DEFAULT_RANKS_TABLE
     bsr_table: str = DEFAULT_BSR_TABLE
     #: Also read every project's Ranks tab (ranks of every ASIN x keyword, and BSR).
@@ -372,6 +375,7 @@ def load_settings(env_file: Path | str | None = None, *, override: bool = False)
         scrape_keywords=_get_bool("SCRAPE_KEYWORDS", True),
         keep_history=_get_bool("KEEP_HISTORY", True),
         keep_keyword_history=_get_bool("KEEP_KEYWORD_HISTORY", False),
+        save_empty_ranks=_get_bool("SAVE_EMPTY_RANKS", True),
         ranks_table=_get("DB_RANKS_TABLE", DEFAULT_RANKS_TABLE) or DEFAULT_RANKS_TABLE,
         bsr_table=_get("DB_BSR_TABLE", DEFAULT_BSR_TABLE) or DEFAULT_BSR_TABLE,
         scrape_ranks=_get_bool("SCRAPE_RANKS", True),

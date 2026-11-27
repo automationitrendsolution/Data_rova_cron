@@ -207,8 +207,11 @@ class TestDailyRanksExport:
 
         rows = parse_daily_ranks_csv(path, "B07K6YKZBK")
 
-        assert len(rows) == 2  # the row with no rank and no badge is dropped
-        first, second = rows
+        assert len(rows) == 3  # the row with no rank and no badge is kept (empty)
+        first, second, empty = rows
+        assert (empty.keyword, empty.organic_rank, empty.sponsored_rank, empty.amazon_choice) == (
+            "car shield", None, None, False
+        )
         assert (first.keyword, first.day, first.organic_rank, first.sponsored_rank, first.amazon_choice) == (
             "automotive windshield snow covers", date(2026, 10, 21), 3, 13, False
         )
