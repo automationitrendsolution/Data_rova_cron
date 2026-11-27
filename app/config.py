@@ -215,9 +215,11 @@ class Settings:
     keywords_table: str = DEFAULT_KEYWORDS_TABLE
     #: Also read every project's Keywords tab (slower: ~1 more page per marketplace).
     scrape_keywords: bool = True
-    #: False: datarova_all_data and datarova_keywords hold only the latest run
-    #: (each run replaces all their rows).  True: one snapshot per day is kept.
-    keep_history: bool = False
+    #: True: datarova_all_data keeps one snapshot per day (price, reviews,
+    #: rating... trends).  False: it holds only the latest run.
+    keep_history: bool = True
+    #: The same for datarova_keywords (~44k rows a day, so latest-only by default).
+    keep_keyword_history: bool = False
     ranks_table: str = DEFAULT_RANKS_TABLE
     bsr_table: str = DEFAULT_BSR_TABLE
     #: Also read every project's Ranks tab (ranks of every ASIN x keyword, and BSR).
@@ -368,7 +370,8 @@ def load_settings(env_file: Path | str | None = None, *, override: bool = False)
         table=table,
         keywords_table=keywords_table,
         scrape_keywords=_get_bool("SCRAPE_KEYWORDS", True),
-        keep_history=_get_bool("KEEP_HISTORY", False),
+        keep_history=_get_bool("KEEP_HISTORY", True),
+        keep_keyword_history=_get_bool("KEEP_KEYWORD_HISTORY", False),
         ranks_table=_get("DB_RANKS_TABLE", DEFAULT_RANKS_TABLE) or DEFAULT_RANKS_TABLE,
         bsr_table=_get("DB_BSR_TABLE", DEFAULT_BSR_TABLE) or DEFAULT_BSR_TABLE,
         scrape_ranks=_get_bool("SCRAPE_RANKS", True),

@@ -29,7 +29,7 @@ Four tables (and three ready-made views) in the **`powerbidb`** database:
 
 | Table | What is in it | One row per | History |
 |---|---|---|---|
-| **`datarova_all_data`** | Every product (ASIN) in every project: price, reviews, rating, BSR, visibility, category… | project × ASIN | **latest run only** (each run replaces it) |
+| **`datarova_all_data`** | Every product (ASIN) in every project: price, reviews, rating, BSR, visibility, category… | day × project × ASIN | a new snapshot every day (`KEEP_HISTORY`) |
 | **`datarova_keywords`** | Every keyword in every project: clicks, sales, conversion, trend, organic/sponsored rank, top ASIN… | project × keyword | **latest run only** (each run replaces it) |
 | **`datarova_ranks`** | Daily rank of every product for every keyword: **organic rank, sponsored rank, Amazon's Choice (Yes/No)** | day × project × ASIN × keyword | 90 days back + every new day |
 | **`datarova_bsr`** | Daily Best Seller Rank of every product | day × project × ASIN | 90 days back + every new day |
@@ -244,7 +244,8 @@ Rarely needed (defaults are fine):
 | Setting | Default | Meaning |
 |---|---|---|
 | `SCRAPE_KEYWORDS` / `SCRAPE_RANKS` | `true` | turn keywords / ranks off |
-| `KEEP_HISTORY` | `false` | `false`: `datarova_all_data` and `datarova_keywords` hold only the latest run. `true`: keep one snapshot per day. Ranks and BSR always keep their history |
+| `KEEP_HISTORY` | `true` | `true`: `datarova_all_data` keeps one snapshot per day (price, reviews, rating trends). `false`: latest run only |
+| `KEEP_KEYWORD_HISTORY` | `false` | the same for `datarova_keywords` (about 44k rows a day). Ranks and BSR always keep their history |
 | `RANKS_INITIAL_DAYS` / `RANKS_DAYS` | `90` / `7` | days of ranks for a new project / each daily run |
 | `BROWSER_TIMEOUT_MS`, `TABLE_TIMEOUT_MS` | `300000` (5 min) | how long to wait for a slow DataRova page |
 | `EXPORT_WAIT_SECONDS` | `3600` | how long DataRova may take to build rank exports |

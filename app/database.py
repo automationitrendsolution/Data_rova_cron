@@ -125,9 +125,11 @@ class DataRovaRepository:
         ranks_table: str | None = None,
         bsr_table: str | None = None,
         keep_history: bool = True,
+        keep_keyword_history: bool = True,
     ) -> None:
         self.engine = engine
         self.keep_history = keep_history
+        self.keep_keyword_history = keep_keyword_history
         self.table_name = table
         self.keywords_table_name = keywords_table
         self.ranks_table_name = ranks_table
@@ -297,14 +299,16 @@ class DataRovaRepository:
 
     # -- writes --------------------------------------------------------------
 
-    def _old_rows(self, table: Table, days: list):
-        """The rows a new snapshot replaces: its own days, or every row."""
-        if self.keep_history:
+    @staticmethod
+    def _old_rows(table: Table, days: list, keep: bool):
+        """The rows a new snapshot replaces: its own days (keep history), or every row."""
+        if keep:
             return delete(table).where(table.c[DATE_COLUMN].in_(days))
         return delete(table)
 
-    def _scope(self, labels: tuple[str, ...]) -> str:
-        return f"for {', '.join(labels)}" if self.keep_history else "(all days: KEEP_HISTORY=false)"
+    @staticmethod
+    def _scope(labels: tuple[str, ...], keep: bool, setting: str) -> str:
+        return f"for {', '.join(labels)}" if keep else f"(all days: {setting}=false)"
 
     def replace_snapshot(
         self,
@@ -338,17 +342,17 @@ class DataRovaRepository:
         kw_deleted = kw_inserted = 0
         try:
             with self.transaction() as connection:
-                deleted = connection.execute(self._old_rows(table, days)).rowcount
+                deleted = connection.execute(self._old_rows(table, days, self.keep_history)).rowcount
                 logger.info(
-                    "Replacing %s old ASIN rows %s", f"{max(deleted or 0, 0):,}", self._scope(labels)
+                    "Replacing %s old ASIN rows %s", f"{max(deleted or 0, 0):,}", self._scope(labels, self.keep_history, "KEEP_HISTORY")
                 )
                 inserted = _chunked_insert(connection, table, rows)
                 if kw_rows and kw_table is not None:
-                    kw_deleted = connection.execute(self._old_rows(kw_table, days)).rowcount
+                    kw_deleted = connection.execute(self._old_rows(kw_table, days, self.keep_keyword_history)).rowcount
                     logger.info(
                         "Replacing %s old keyword rows %s",
                         f"{max(kw_deleted or 0, 0):,}",
-                        self._scope(labels),
+                        self._scope(labels, self.keep_keyword_history, "KEEP_KEYWORD_HISTORY"),
                     )
                     kw_inserted = _chunked_insert(connection, kw_table, kw_rows)
         except SQLAlchemyError as exc:
@@ -481,6 +485,7 @@ def build_repository(settings: Settings, *, echo: bool = False) -> DataRovaRepos
         ranks_table=settings.ranks_table if settings.scrape_ranks else None,
         bsr_table=settings.bsr_table if settings.scrape_ranks else None,
         keep_history=settings.keep_history,
+        keep_keyword_history=settings.keep_keyword_history,
     )
     try:
         repository.check_connection()

@@ -18,7 +18,7 @@ import time
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from enum import Enum
 from typing import Any, TypeVar
 
@@ -52,6 +52,23 @@ from .timeutils import INDIA_TZ, now_in, now_utc
 
 logger = get_logger("pipeline")
 
+
+
+#: DataRova publishes a day's ranks the next afternoon, so the run day itself
+#: is often empty; a project whose newest rank is older than this many days
+#: before the run day has stopped getting ranks.
+RANKS_STALE_AFTER_DAYS = 2
+
+
+def stale_ranks_message(ranks, start: date, end: date) -> str | None:
+    """Why a project's ranks look stopped, or None when they are up to date."""
+    days = [r.day for r in ranks if r.day is not None]
+    if not days:
+        return f"no ranks at all from {start} to {end} -- ask DataRova why"
+    newest = max(days)
+    if newest < end - timedelta(days=RANKS_STALE_AFTER_DAYS):
+        return f"newest rank is {newest} (nothing since) -- ask DataRova why"
+    return None
 
 class DataRovaSite:
     """The DataRova pages a run reads, in one signed-in browser."""
@@ -191,6 +208,8 @@ class RunSummary:
     bsr_rows: int = 0
     rank_projects: int = 0
     rank_failures: list[str] = field(default_factory=list)
+    #: Project marketplaces whose newest rank is older than it should be.
+    rank_stale: list[str] = field(default_factory=list)
     write_result: WriteResult | None = None
     error: str | None = None
     advice: str | None = None
@@ -252,6 +271,8 @@ class RunSummary:
             )
         if self.rank_failures:
             write("Ranks gaps", *self.rank_failures[:20])
+        if self.rank_stale:
+            write("Ranks stopped", *self.rank_stale[:20])
         if self.write_result:
             lines = [
                 f"{self.write_result.table}: removed {self.write_result.deleted:,} old rows, "
@@ -645,6 +666,10 @@ class DataRovaPipeline:
                 continue
             for asin in data.failed_asins:
                 self.summary.rank_failures.append(f"{pid} ASIN {asin}")
+            stale = stale_ranks_message(data.ranks, data.start, data.end)
+            if stale:
+                logger.warning("Ranks of project %s (%s): %s", pid, project.name, stale)
+                self.summary.rank_stale.append(f"{pid} {project.name} ({table.marketplace or '?'}): {stale}")
             if getattr(data, "bsr_missing", False):
                 self.summary.rank_failures.append(f"{pid} {project.name}: BSR not read")
             rank_rows = [

@@ -29,3 +29,16 @@ def test_card_marketplace_uses_the_only_flag_on_the_card():
 def test_card_marketplace_is_unknown_with_zero_or_several_flags():
     assert card_marketplace(SimpleNamespace(marketplaces=())) == (None, None)
     assert card_marketplace(SimpleNamespace(marketplaces=("US", "CA"))) == (None, None)
+
+
+def test_stale_ranks_are_flagged():
+    from datetime import date
+
+    from app.main import stale_ranks_message
+
+    start, end = date(2026, 11, 21), date(2026, 11, 27)
+    day = lambda d: SimpleNamespace(day=d)  # noqa: E731
+    assert stale_ranks_message([day(date(2026, 11, 26))], start, end) is None
+    assert stale_ranks_message([day(date(2026, 11, 25))], start, end) is None
+    assert "2026-11-23" in stale_ranks_message([day(date(2026, 11, 23))], start, end)
+    assert "no ranks at all" in stale_ranks_message([], start, end)
